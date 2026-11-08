@@ -268,8 +268,13 @@ where
         let fields = &timing.fields;
         if let Some((sql, _)) = fields.sql_text() {
             let dialect = fields.db_system.as_deref().and_then(crate::performance::Dialect::from_name);
+            // Where the span was declared is the call site only when that is
+            // app code; a span declared inside a library (a database crate's
+            // own instrumentation) resolves the first app frame instead.
             let site = match (timing.file, timing.line) {
-                (Some(file), Some(line)) => crate::performance::recorder::SiteSource::Static { file, line },
+                (Some(file), Some(line)) if declared_in_app(file) => {
+                    crate::performance::recorder::SiteSource::Static { file, line }
+                }
                 _ => crate::performance::recorder::SiteSource::Capture,
             };
             timing.recorder.record_sql(sql, timing.start, duration, dialect, fields.rows, None, site);
@@ -278,6 +283,12 @@ where
             timing.recorder.record_http(method, url, fields.status, timing.start, duration);
         }
     }
+}
+
+/// Whether a span declared in `file` is the app's own code.
+#[cfg(feature = "performance")]
+fn declared_in_app(file: &str) -> bool {
+    client::current().and_then(|client| client.paths.clone()).is_some_and(|paths| paths.declared_in_app(file))
 }
 
 /// A finished query event (sqlx): records it in the current request or job.

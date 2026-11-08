@@ -288,10 +288,6 @@ impl Paths {
         })
     }
 
-    fn roots(&self) -> impl Iterator<Item = &str> {
-        self.roots_with(self.learned().root.as_deref())
-    }
-
     fn roots_with<'a>(&'a self, learned: Option<&'a str>) -> impl Iterator<Item = &'a str> {
         self.configured_root.as_deref().into_iter().chain(learned).chain(self.cwd.as_deref().filter(|cwd| *cwd != "/"))
     }
@@ -325,10 +321,22 @@ impl Paths {
     }
 
     fn path_in_app(&self, path: &str, crate_name: Option<&str>) -> bool {
+        self.path_in_app_with(path, crate_name, self.learned().root.as_deref())
+    }
+
+    /// Whether a source file named in tracing metadata (where a span was
+    /// declared) is the app's own code. Cheap enough for every span: it
+    /// never resolves the backtrace taken in `init`.
+    pub(crate) fn declared_in_app(&self, file: &str) -> bool {
+        let learned = self.learned.get().and_then(|learned| learned.root.as_deref());
+        self.path_in_app_with(&file.replace('\\', "/"), None, learned)
+    }
+
+    fn path_in_app_with(&self, path: &str, crate_name: Option<&str>, learned: Option<&str>) -> bool {
         if is_dependency_path(path) {
             return false;
         }
-        if let Some(rest) = self.roots().find_map(|root| path.strip_prefix(root)) {
+        if let Some(rest) = self.roots_with(learned).find_map(|root| path.strip_prefix(root)) {
             return !(rest.starts_with("target/") || rest.starts_with("vendor/"));
         }
         if !path.starts_with('/') && !is_windows_absolute(path) {
@@ -662,6 +670,18 @@ mod tests {
         assert_eq!(display_path_in_hook(&paths, "/Users/mara/elsewhere/lib.rs"), "~/elsewhere/lib.rs");
         assert_eq!(display_path_in_hook(&paths, "/build/src/main.rs"), "src/main.rs");
         assert_eq!(display_path_in_hook(&paths, "src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn declared_files_in_dependencies_are_not_app_code() {
+        let paths = paths();
+        assert!(paths.declared_in_app("src/db.rs"));
+        assert!(paths.declared_in_app("/build/src/db.rs"));
+        assert!(!paths.declared_in_app("/build/target/debug/build/shop-1/out/gen.rs"));
+        assert!(!paths.declared_in_app(
+            "/Users/me/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sea-orm-1.1.0/src/executor/query.rs"
+        ));
+        assert!(!paths.declared_in_app("/home/me/.cargo/git/checkouts/mylib-1a2b3c/abc1234/src/lib.rs"));
     }
 
     #[test]
