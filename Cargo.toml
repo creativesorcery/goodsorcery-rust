@@ -14,7 +14,9 @@ categories = ["development-tools::debugging", "development-tools::profiling", "w
 publish = false
 
 [features]
-default = []
+default = ["performance"]
+# Performance monitoring (still off at run time until Config::performance_monitoring(true)).
+performance = []
 # capture_anyhow for anyhow::Error.
 anyhow = ["dep:anyhow"]
 
@@ -30,4 +32,4 @@ tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "net", "t
 
 [lints.rust]
 # Integrations added in the following commits.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("axum", "performance", "tracing"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("axum", "tracing"))'] }

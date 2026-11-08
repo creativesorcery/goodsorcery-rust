@@ -68,6 +68,9 @@ mod transport;
 mod util;
 mod worker;
 
+#[cfg(feature = "performance")]
+pub mod performance;
+
 pub use client::{ClientGuard, Verification, flush, init, is_enabled, verify};
 pub use config::{Config, DEFAULT_ENDPOINT};
 #[cfg(feature = "anyhow")]
