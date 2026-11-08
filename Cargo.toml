@@ -14,9 +14,13 @@ categories = ["development-tools::debugging", "development-tools::profiling", "w
 publish = false
 
 [features]
-default = ["performance"]
+default = ["axum", "performance", "tracing"]
+# The tower/axum layer: request context, panics, 5xx responses and request timing.
+axum = ["dep:axum", "dep:http", "dep:tower-layer", "dep:tower-service"]
 # Performance monitoring (still off at run time until Config::performance_monitoring(true)).
 performance = []
+# A tracing Layer: breadcrumbs from tracing events, and database/HTTP spans for performance monitoring.
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
 # capture_anyhow for anyhow::Error.
 anyhow = ["dep:anyhow"]
 
@@ -26,10 +30,21 @@ pin-project-lite = "0.2.14"
 serde_json = "1.0.120"
 ureq = { version = "3.0.12", default-features = false, features = ["rustls"] }
 anyhow = { version = "1.0.86", optional = true }
+axum = { version = "0.8.1", default-features = false, features = ["matched-path"], optional = true }
+http = { version = "1.1.0", optional = true }
+tower-layer = { version = "0.3.3", optional = true }
+tower-service = { version = "0.3.3", optional = true }
+tracing = { version = "0.1.40", default-features = false, features = ["std"], optional = true }
+tracing-subscriber = { version = "0.3.18", default-features = false, features = ["registry", "std"], optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "net", "time"] }
+axum = { version = "0.8.1", default-features = false, features = ["matched-path", "tokio", "http1", "query"] }
+tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "net", "time", "signal"] }
+tower = { version = "0.5.1", default-features = false, features = ["util"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", default-features = false, features = ["registry", "std", "fmt", "ansi"] }
 
-[lints.rust]
-# Integrations added in the following commits.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("axum", "tracing"))'] }
+[[example]]
+name = "axum"
+path = "examples/axum.rs"
+required-features = ["axum", "performance", "tracing"]

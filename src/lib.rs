@@ -68,8 +68,12 @@ mod transport;
 mod util;
 mod worker;
 
+#[cfg(feature = "axum")]
+pub mod axum;
 #[cfg(feature = "performance")]
 pub mod performance;
+#[cfg(feature = "tracing")]
+pub mod tracing;
 
 pub use client::{ClientGuard, Verification, flush, init, is_enabled, verify};
 pub use config::{Config, DEFAULT_ENDPOINT};
