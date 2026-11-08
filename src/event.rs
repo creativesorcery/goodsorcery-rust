@@ -327,7 +327,8 @@ pub(crate) fn type_class(name: &str) -> Option<String> {
     }
     let class = format!("{}{rest}", segments.join("::"));
     let class = match class.as_str() {
-        "std::io::Error" | "core::fmt::Error" => class.replacen("core::", "std::", 1),
+        // Rust 1.99 moved io::Error into core; apps know it as std::io::Error.
+        "std::io::Error" | "core::io::Error" | "core::fmt::Error" => class.replacen("core::", "std::", 1),
         _ => class,
     };
     Some(class)
@@ -514,6 +515,7 @@ mod tests {
     #[test]
     fn std_type_names_are_tidied() {
         assert_eq!(type_class("std::io::error::Error").as_deref(), Some("std::io::Error"));
+        assert_eq!(type_class("core::io::error::Error").as_deref(), Some("std::io::Error"));
         assert_eq!(type_class("serde_json::error::Error").as_deref(), Some("serde_json::Error"));
         assert_eq!(type_class("core::num::error::ParseIntError").as_deref(), Some("core::num::error::ParseIntError"));
         assert_eq!(type_class("&shop::Error").as_deref(), Some("shop::Error"));

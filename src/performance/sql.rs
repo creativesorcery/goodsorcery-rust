@@ -346,10 +346,7 @@ fn in_list_end(b: &[u8], i: usize) -> Option<usize> {
         if b.get(k) != Some(&b',') {
             break;
         }
-        match list_item(b, skip_space(b, k + 1)) {
-            Some(next) => j = next,
-            None => return None,
-        }
+        j = list_item(b, skip_space(b, k + 1))?;
     }
     let k = skip_space(b, j);
     (b.get(k) == Some(&b')')).then_some(k + 1)

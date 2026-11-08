@@ -16,8 +16,16 @@ fn explode(order: u32) {
 fn reports_panics_and_keeps_the_previous_hook() {
     let previous_calls = Arc::new(AtomicUsize::new(0));
     let counter = previous_calls.clone();
-    std::panic::set_hook(Box::new(move |_| {
-        counter.fetch_add(1, Ordering::SeqCst);
+    // Count this test's own panics; anything else (a failed assertion) goes to
+    // the default hook so CI shows why the test failed.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info.payload().downcast_ref::<String>().map(String::as_str);
+        if message.is_some_and(|message| message.starts_with("boom ")) {
+            counter.fetch_add(1, Ordering::SeqCst);
+        } else {
+            default_hook(info);
+        }
     }));
 
     let server = FakeServer::start();
