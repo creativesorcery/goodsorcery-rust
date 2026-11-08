@@ -265,19 +265,45 @@ impl Recorder {
 
 /// Splits a URL (or a bare path) into a host without credentials and a path
 /// without query string or fragment.
+///
+/// Credentials go first: everything up to the last `@` before the first
+/// `/` is dropped, so a password holding an unencoded `?` or `#` never
+/// shows up as the host. What is left of the authority must look like a
+/// host (`name`, `name:port` or `[v6]:port`); anything else (a password
+/// with an unencoded `/`, say) sends no host and path `/`, never a part of
+/// the credentials.
 pub(crate) fn split_url(url: &str) -> (String, String) {
     let url = url.trim();
-    let (authority, rest) = match url.split_once("://") {
-        Some((_, after)) => {
-            let end = after.find(['/', '?', '#']).unwrap_or(after.len());
-            (&after[..end], &after[end..])
-        }
-        None => ("", url),
+    let Some((_, after)) = url.split_once("://") else {
+        let path = url.split(['?', '#']).next().unwrap_or("");
+        return (String::new(), truncate(if path.is_empty() { "/" } else { path }, 1_024));
     };
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let slash = after.find('/').unwrap_or(after.len());
+    let (authority, rest) = after.split_at(slash);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let (host, path) = match authority.find(['?', '#']) {
+        // The query or fragment starts before any path.
+        Some(end) => (&authority[..end], "/"),
+        None => (authority, rest.split(['?', '#']).next().unwrap_or("")),
+    };
+    if !looks_like_host(host) {
+        return (String::new(), "/".to_string());
+    }
     let path = if path.is_empty() { "/" } else { path };
     (truncate(host, 255), truncate(path, 1_024))
+}
+
+/// `name`, `name:port`, `[v6]` or `[v6]:port` (an empty host is fine).
+fn looks_like_host(host: &str) -> bool {
+    let port = match host.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((_, "")) => None,
+            Some((_, after)) => Some(after.strip_prefix(':').unwrap_or("x")),
+            None => return false,
+        },
+        None => host.split_once(':').map(|(_, port)| port),
+    };
+    port.is_none_or(|port| port.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]
@@ -292,5 +318,23 @@ mod tests {
         );
         assert_eq!(split_url("http://example.com"), ("example.com".to_string(), "/".to_string()));
         assert_eq!(split_url("/local/path?q=1"), (String::new(), "/local/path".to_string()));
+        assert_eq!(split_url("http://[::1]:8080/x"), ("[::1]:8080".to_string(), "/x".to_string()));
+        assert_eq!(split_url("https://api.example.com?q=1"), ("api.example.com".to_string(), "/".to_string()));
+    }
+
+    #[test]
+    fn credentials_with_unencoded_delimiters_never_leak() {
+        assert_eq!(
+            split_url("https://user:pa?ss@api.example.com/x"),
+            ("api.example.com".to_string(), "/x".to_string())
+        );
+        assert_eq!(
+            split_url("https://user:pa#ss@api.example.com/x"),
+            ("api.example.com".to_string(), "/x".to_string())
+        );
+        // A `/` in the password: the authority can't be told apart, so
+        // neither host nor path is sent.
+        assert_eq!(split_url("https://user:pa/ss@api.example.com/x"), (String::new(), "/".to_string()));
+        assert_eq!(split_url("https://user:secret/x"), (String::new(), "/".to_string()));
     }
 }
