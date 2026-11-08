@@ -163,12 +163,20 @@ pub(crate) mod log {
 
     pub(crate) fn debug(message: impl AsRef<str>) {
         if DEBUG.load(Ordering::Relaxed) {
-            eprintln!("[goodsorcery] {}", message.as_ref());
+            write_line(message.as_ref());
         }
     }
 
     pub(crate) fn warn(message: impl AsRef<str>) {
-        eprintln!("[goodsorcery] {}", message.as_ref());
+        write_line(message.as_ref());
+    }
+
+    /// Writes one line to stderr, ignoring failures: `eprintln!` panics
+    /// when stderr is a broken pipe, and these lines are written from app
+    /// threads and from the panic hook.
+    fn write_line(message: &str) {
+        use std::io::Write;
+        let _ = writeln!(std::io::stderr().lock(), "[goodsorcery] {message}");
     }
 
     /// Logs at most once per process for `key`.
