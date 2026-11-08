@@ -46,7 +46,7 @@ use crate::config::Config;
 use crate::event::EventId;
 use crate::runtime::RuntimeInfo;
 use crate::transport::Transport;
-use crate::util::{lock, log, millis, minute_of, truncate};
+use crate::util::{deadline_after, lock, log, millis, minute_of, truncate};
 
 /// State shared by recorders, the client and the flusher thread.
 pub(crate) struct Shared {
@@ -103,7 +103,7 @@ impl Apm {
     /// Sends every minute recorded so far (the open one included), waiting
     /// up to `timeout`.
     pub(crate) fn flush(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        let deadline = deadline_after(timeout);
         let mut state = lock(&self.shared.flush);
         if state.stopped {
             return true;
@@ -128,7 +128,7 @@ impl Apm {
 
     /// Sends everything and stops the thread, waiting up to `timeout`.
     pub(crate) fn close(&self, timeout: Duration) {
-        let deadline = Instant::now() + timeout;
+        let deadline = deadline_after(timeout);
         {
             let mut state = lock(&self.shared.flush);
             state.closing = true;

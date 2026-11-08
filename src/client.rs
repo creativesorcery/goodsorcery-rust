@@ -7,7 +7,7 @@ use std::fmt;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::backtrace::Paths;
 use crate::config::Config;
@@ -15,7 +15,7 @@ use crate::event::PendingEvent;
 use crate::filter::KeyFilter;
 use crate::runtime::RuntimeInfo;
 use crate::transport::{Outcome, Transport, VERIFY_PATH};
-use crate::util::{lock, log, masked_key};
+use crate::util::{deadline_after, lock, log, masked_key};
 use crate::worker::Worker;
 
 pub(crate) struct Client {
@@ -160,20 +160,25 @@ impl Client {
         }
     }
 
+    /// Sends errors and performance data, waiting up to `timeout` in all
+    /// (each step gets only the time the previous one left).
     pub(crate) fn flush(&self, timeout: Duration) -> bool {
-        let errors = self.worker.as_ref().is_none_or(|worker| worker.queue.flush(timeout));
+        let deadline = deadline_after(timeout);
+        let errors = self.worker.as_ref().is_none_or(|worker| worker.queue.flush(time_left(deadline)));
         #[cfg(feature = "performance")]
-        let errors = errors && self.apm.as_ref().is_none_or(|apm| apm.flush(timeout));
+        let errors = self.apm.as_ref().is_none_or(|apm| apm.flush(time_left(deadline))) && errors;
         errors
     }
 
+    /// Sends what is left and stops, waiting up to `timeout` in all.
     fn close(&self, timeout: Duration) {
+        let deadline = deadline_after(timeout);
         #[cfg(feature = "performance")]
         if let Some(apm) = &self.apm {
-            apm.close(timeout);
+            apm.close(time_left(deadline));
         }
         if let Some(worker) = &self.worker {
-            worker.close(timeout);
+            worker.close(time_left(deadline));
         }
     }
 }
@@ -255,4 +260,9 @@ pub fn verify() -> Verification {
         Outcome::Rejected(401) => Verification::InvalidKey,
         other => Verification::Failed(other.description()),
     }
+}
+
+/// What is left until `deadline` (zero once it has passed).
+fn time_left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
 }

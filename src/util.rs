@@ -127,6 +127,17 @@ pub(crate) fn round3(value: f64) -> f64 {
     if value.is_finite() { (value * 1000.0).round() / 1000.0 } else { 0.0 }
 }
 
+/// The instant `after` from now, for a deadline built from a caller's
+/// duration. One too large to add (`Duration::MAX`, a natural way to say
+/// "wait forever") gives a deadline decades away instead of panicking.
+pub(crate) fn deadline_after(after: Duration) -> Instant {
+    let now = Instant::now();
+    [after, Duration::from_secs(100 * 365 * 86_400), Duration::from_secs(86_400)]
+        .into_iter()
+        .find_map(|duration| now.checked_add(duration))
+        .unwrap_or(now)
+}
+
 /// Milliseconds in a duration, as a float.
 pub(crate) fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
@@ -256,6 +267,14 @@ mod tests {
         assert_eq!(masked_key("gs_test_9f2c0000e81a"), "gs_test_…e81a");
         assert_eq!(masked_key("short"), "…");
         assert_eq!(masked_key("abcdefghijklmnop"), "…mnop");
+    }
+
+    #[test]
+    fn deadlines_never_overflow() {
+        let far = deadline_after(Duration::MAX);
+        assert!(far > Instant::now() + Duration::from_secs(86_000));
+        let near = deadline_after(Duration::from_millis(5));
+        assert!(near <= Instant::now() + Duration::from_millis(5));
     }
 
     #[test]

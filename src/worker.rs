@@ -22,7 +22,7 @@ use crate::backtrace::{self, Paths, SourceCache};
 use crate::config::Config;
 use crate::event::{PendingEvent, guard};
 use crate::transport::{BATCH_PATH, EVENTS_PATH, Outcome, Transport};
-use crate::util::{lock, log, random_unit};
+use crate::util::{deadline_after, lock, log, random_unit};
 
 const MAX_EVENT_BYTES: usize = 512 * 1024;
 const MAX_BATCH_BYTES: usize = 2 * 1024 * 1024 - 16 * 1024;
@@ -77,7 +77,7 @@ impl Queue {
     /// `interval` has passed (or a flush or close was asked for). An empty
     /// result with the queue closed ends the worker.
     fn take_batch(&self, batch_size: usize, interval: Duration) -> (Vec<PendingEvent>, bool) {
-        let deadline = Instant::now() + interval;
+        let deadline = deadline_after(interval);
         let mut state = lock(&self.state);
         loop {
             let ready = state.events.len() >= batch_size || state.closed || state.flush_requested;
@@ -115,7 +115,7 @@ impl Queue {
 
     /// Sleeps for `duration`, returning early (false) when the queue closes.
     fn pause(&self, duration: Duration) -> bool {
-        let deadline = Instant::now() + duration;
+        let deadline = deadline_after(duration);
         let mut state = lock(&self.state);
         while !state.closed {
             let now = Instant::now();
@@ -134,7 +134,7 @@ impl Queue {
     /// Waits until everything queued has been handled, up to `timeout`.
     /// Returns true when the queue drained in time.
     pub(crate) fn flush(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
+        let deadline = deadline_after(timeout);
         let mut state = lock(&self.state);
         state.flush_requested = true;
         self.wake.notify_all();

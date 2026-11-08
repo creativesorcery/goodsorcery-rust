@@ -326,3 +326,46 @@ fn trait_objects_report_a_readable_class() {
     assert_eq!(events[0]["exception"]["message"], "gone");
     assert_eq!(events[1]["exception"]["class"], "core::num::error::ParseIntError");
 }
+
+#[test]
+fn duration_max_means_wait_as_long_as_it_takes() {
+    let _lock = serial();
+    let server = FakeServer::start();
+    let guard = goodsorcery::init(
+        config(&server).flush_interval(Duration::MAX).shutdown_timeout(Duration::MAX).performance_monitoring(true),
+    );
+    goodsorcery::capture_message("first", Level::Error);
+    assert!(goodsorcery::flush(Duration::MAX));
+    assert_eq!(server.events().len(), 1);
+    goodsorcery::capture_message("second", Level::Error);
+    assert!(guard.flush(Duration::MAX));
+    goodsorcery::capture_message("third", Level::Error);
+    drop(guard);
+    assert_eq!(server.events().len(), 3);
+}
+
+#[test]
+fn shutdown_waits_at_most_the_timeout_in_all() {
+    let _lock = serial();
+    let server = FakeServer::start();
+    server.respond_with(|request| {
+        std::thread::sleep(Duration::from_secs(3));
+        Reply::default_for(request)
+    });
+    let guard = goodsorcery::init(
+        config(&server)
+            .performance_monitoring(true)
+            .timeout(Duration::from_secs(10))
+            .shutdown_timeout(Duration::from_millis(800)),
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    runtime.block_on(goodsorcery::job("NightlyReport", None, async {}));
+    goodsorcery::capture_message("slow server", Level::Error);
+    // Let the worker start sending, so both the error and the performance
+    // data are stuck on the slow server at shutdown.
+    std::thread::sleep(Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    drop(guard);
+    let waited = started.elapsed();
+    assert!(waited < Duration::from_millis(1_300), "shutdown took {waited:?}");
+}
