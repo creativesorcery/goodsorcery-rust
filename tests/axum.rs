@@ -387,3 +387,52 @@ async fn requests_never_take_a_user_set_outside_any_request() {
     assert_eq!(request["tags"]["region"], "eu-west-1", "tags are still inherited");
     assert_eq!(events[2]["user"]["id"], "1");
 }
+
+#[tokio::test]
+async fn the_configured_sql_dialect_applies_to_queries_without_one() {
+    let _lock = serial();
+    let server = FakeServer::start();
+    let layer = goodsorcery::tracing::layer().breadcrumb_level(tracing::Level::DEBUG);
+    let _subscriber = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let guard = goodsorcery::init(
+        config(&server).performance_monitoring(true).sql_dialect(goodsorcery::performance::Dialect::Mysql),
+    );
+    let app = Router::new()
+        .route(
+            "/token",
+            get(|| async {
+                // sqlx events carry no db.system.
+                tracing::debug!(
+                    target: "sqlx::query",
+                    summary = r#"SELECT * FROM users WHERE api_token = "a8f3k29dk3""#,
+                    db.statement = "",
+                    rows_returned = 1u64,
+                    elapsed_secs = 0.002f64,
+                    "query"
+                );
+                performance::record_span(
+                    SpanKind::Sql,
+                    Duration::from_millis(1),
+                    r#"UPDATE sessions SET last_seen = NOW() WHERE token = "b7c6d5e4""#,
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            }),
+        )
+        .layer(goodsorcery::axum::layer());
+    assert_eq!(call(&app, "GET", "/token", &[]).await, StatusCode::INTERNAL_SERVER_ERROR);
+    drop(guard);
+
+    let event = &server.events()[0];
+    let sql_crumb = event["breadcrumbs"].as_array().unwrap().iter().find(|c| c["category"] == "sql").unwrap();
+    assert_eq!(sql_crumb["data"]["sql"], "SELECT * FROM users WHERE api_token = ?");
+    let trace = &server.requests_to("/api/v1/apm/traces")[0].body["traces"][0];
+    let sql: Vec<_> = trace["spans"].as_array().unwrap().iter().filter_map(|s| s["sql"].as_str()).collect();
+    assert!(sql.contains(&"SELECT * FROM users WHERE api_token = ?"), "{sql:?}");
+    assert!(sql.contains(&"UPDATE sessions SET last_seen = NOW() WHERE token = ?"), "{sql:?}");
+    // The handler source lines (code context) quote the values, so check
+    // only the SQL that was sent.
+    let sent = format!("{sql:?} {sql_crumb}");
+    for secret in ["a8f3k29dk3", "b7c6d5e4"] {
+        assert!(!sent.contains(secret), "{secret} leaked");
+    }
+}

@@ -52,6 +52,8 @@ use crate::util::{deadline_after, lock, log, millis, minute_of, truncate};
 pub(crate) struct Shared {
     pub(crate) on: AtomicBool,
     traces_on: bool,
+    /// [`Config::sql_dialect`]: the dialect of queries recorded without one.
+    pub(crate) sql_dialect: Option<Dialect>,
     ignore: HashSet<String>,
     pub(crate) aggregator: Mutex<Aggregator>,
     pub(crate) traces: Mutex<TraceBuffer>,
@@ -79,6 +81,7 @@ impl Apm {
         let shared = Arc::new(Shared {
             on: AtomicBool::new(true),
             traces_on: config.performance_traces,
+            sql_dialect: config.sql_dialect,
             ignore: config.performance_ignore_transactions.iter().cloned().collect(),
             aggregator: Mutex::new(Aggregator::default()),
             traces: Mutex::new(TraceBuffer::default()),
@@ -158,6 +161,11 @@ fn shared() -> Option<Arc<Shared>> {
     let client = crate::client::current_enabled()?;
     let shared = client.apm.as_ref()?.shared.clone();
     shared.on.load(Ordering::Relaxed).then_some(shared)
+}
+
+/// [`Config::sql_dialect`] of the installed client.
+pub(crate) fn default_dialect() -> Option<Dialect> {
+    crate::client::current().and_then(|client| client.config.sql_dialect)
 }
 
 /// The recorder bound to this thread, while monitoring is on.

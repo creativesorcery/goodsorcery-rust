@@ -203,7 +203,7 @@ Off by default. Turn it on with `.performance_monitoring(true)` (or `GOODSORCERY
 
 Database and HTTP time come from:
 
-- **sqlx**, through the tracing layer: sqlx logs each query as a `DEBUG` event on `sqlx::query`. Make sure that event reaches the goodsorcery layer: filter your other layers individually (`fmt::layer().with_filter(EnvFilter::from_default_env())`), not with a global filter that drops `DEBUG`.
+- **sqlx**, through the tracing layer: sqlx logs each query as a `DEBUG` event on `sqlx::query`. Make sure that event reaches the goodsorcery layer: filter your other layers individually (`fmt::layer().with_filter(EnvFilter::from_default_env())`), not with a global filter that drops `DEBUG`. sqlx's events don't say which database they come from, so tell the client: `.sql_dialect(Dialect::Postgres)` (or `Mysql`, `Sqlite`, from `goodsorcery::performance::Dialect`). It decides how quotes are read when values are removed from the SQL; without it a double-quoted MySQL or SQLite value made only of letters and digits is taken for an identifier and kept.
 - **Spans with OpenTelemetry field names**, through the tracing layer: `db.statement` or `db.query.text` (with `db.system` for the SQL dialect) for queries; `http.request.method` and `url.full` (or `http.method` and `http.url`), with `http.response.status_code`, for outgoing HTTP calls (as `reqwest-tracing` records them).
 - **Your own code**:
 

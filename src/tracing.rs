@@ -318,7 +318,11 @@ fn sql_breadcrumb(fields: &Fields) -> Breadcrumb {
     let mut breadcrumb = Breadcrumb::new("sql", message);
     #[cfg(feature = "performance")]
     if let Some((sql, cut)) = fields.sql_text() {
-        let dialect = fields.db_system.as_deref().and_then(crate::performance::Dialect::from_name);
+        let dialect = fields
+            .db_system
+            .as_deref()
+            .and_then(crate::performance::Dialect::from_name)
+            .or_else(crate::performance::default_dialect);
         let normalized = crate::performance::sql::normalize_cut(sql, dialect, cut);
         breadcrumb = breadcrumb.data("sql", truncate(&normalized, 1_000));
     }

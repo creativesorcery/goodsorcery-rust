@@ -78,6 +78,8 @@ pub struct Config {
     pub(crate) performance_monitoring: bool,
     pub(crate) performance_traces: bool,
     pub(crate) performance_ignore_transactions: Vec<String>,
+    #[cfg(feature = "performance")]
+    pub(crate) sql_dialect: Option<crate::performance::Dialect>,
     pub(crate) debug: bool,
 }
 
@@ -126,6 +128,8 @@ impl Config {
             performance_monitoring: false,
             performance_traces: true,
             performance_ignore_transactions: Vec::new(),
+            #[cfg(feature = "performance")]
+            sql_dialect: None,
             debug: false,
         }
     }
@@ -443,6 +447,24 @@ impl Config {
         S: Into<String>,
     {
         self.performance_ignore_transactions.extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// The app's SQL dialect, for queries whose dialect is not known
+    /// otherwise: sqlx query events (they don't say which database they
+    /// come from), spans without `db.system`, and [`performance::record_sql`]
+    /// or [`performance::record_span`] without one. It decides how quotes
+    /// are read when literal values are removed: set it to
+    /// [`Dialect::Mysql`](crate::performance::Dialect::Mysql) or
+    /// [`Dialect::Sqlite`](crate::performance::Dialect::Sqlite) so a
+    /// double-quoted value (`WHERE token = "a8f3k29dk3"`) is never mistaken
+    /// for an identifier and kept.
+    ///
+    /// [`performance::record_sql`]: crate::performance::record_sql
+    /// [`performance::record_span`]: crate::performance::record_span
+    #[cfg(feature = "performance")]
+    pub fn sql_dialect(mut self, dialect: crate::performance::Dialect) -> Self {
+        self.sql_dialect = Some(dialect);
         self
     }
 

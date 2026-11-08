@@ -176,6 +176,7 @@ impl Recorder {
         site: SiteSource,
     ) {
         let shape = sql::shape(statement);
+        let dialect = dialect.or(self.shared.sql_dialect);
         let need_site = {
             let mut data = lock(&self.data);
             if data.finished {
