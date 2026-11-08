@@ -473,14 +473,11 @@ pub(crate) fn valid_tag_key(key: &str) -> bool {
     (1..=32).contains(&key.len()) && key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// Notes the event in the current scope (the first one wins) and on the
-/// current performance recorder.
+/// Notes the event in the current unit of work (the first one wins) and on
+/// the current performance recorder.
 fn record_event_id(id: EventId) {
-    let scope = scope::current_scope();
-    if let Some(mut data) = scope::lock_scope(&scope) {
-        if data.event_id.is_none() {
-            data.event_id = Some(id);
-        }
+    if let Some(hub) = scope::current_hub() {
+        hub.note_reported(id);
     }
     #[cfg(feature = "performance")]
     crate::performance::note_error(id);

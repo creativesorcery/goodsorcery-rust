@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
@@ -151,13 +151,11 @@ pub(crate) struct ScopeData {
     pub(crate) request: Option<Value>,
     /// The job section, set by [`job`](crate::job).
     pub(crate) job: Option<Value>,
-    /// The first error reported in this scope.
-    pub(crate) event_id: Option<EventId>,
 }
 
 impl ScopeData {
     /// A child: the same user, tags, context, transaction and fingerprint,
-    /// with or without the breadcrumbs, and no request, job or event.
+    /// with or without the breadcrumbs, and no request or job.
     pub(crate) fn fork(&self, breadcrumbs: bool) -> ScopeData {
         ScopeData {
             user: self.user.clone(),
@@ -169,7 +167,6 @@ impl ScopeData {
             max_breadcrumbs: self.max_breadcrumbs,
             request: None,
             job: None,
-            event_id: None,
         }
     }
 
@@ -242,11 +239,16 @@ impl Scope<'_> {
     }
 }
 
-/// What is bound to a thread while it runs a unit of work: the scope and,
-/// with performance monitoring, the request's recorder.
+/// What is bound to a thread while it runs a unit of work: the scope,
+/// the unit of work's first reported error and, with performance
+/// monitoring, the request's recorder.
 #[derive(Clone, Default)]
 pub(crate) struct Hub {
     pub(crate) scope: Option<Arc<Mutex<ScopeData>>>,
+    /// The first error reported in this request or job run. Shared by
+    /// every scope forked inside it (`with_scope`, `scoped`, an inline
+    /// job), so an error captured in a child still counts for the request.
+    pub(crate) reported: Option<Arc<OnceLock<EventId>>>,
     #[cfg(feature = "performance")]
     pub(crate) recorder: Option<Arc<crate::performance::recorder::Recorder>>,
 }
@@ -256,8 +258,21 @@ impl Hub {
     pub(crate) fn with_scope(scope: ScopeData) -> Hub {
         Hub {
             scope: Some(Arc::new(Mutex::new(scope))),
+            reported: None,
             #[cfg(feature = "performance")]
             recorder: None,
+        }
+    }
+
+    /// Whether an error was reported in this unit of work.
+    pub(crate) fn has_reported(&self) -> bool {
+        self.reported.as_ref().is_some_and(|reported| reported.get().is_some())
+    }
+
+    /// Notes the first error reported in this unit of work.
+    pub(crate) fn note_reported(&self, id: EventId) {
+        if let Some(reported) = &self.reported {
+            let _ = reported.set(id);
         }
     }
 

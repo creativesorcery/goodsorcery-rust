@@ -168,8 +168,8 @@ impl RequestState {
             .and_then(|name| request.headers().get(name.as_str()))
             .and_then(|value| value.to_str().ok())
             .map(|value| truncate(value, 128));
-        #[cfg_attr(not(feature = "performance"), allow(unused_mut))]
         let mut hub = scope::forked_hub(false);
+        hub.reported = Some(Default::default());
         if let Some(scope) = &hub.scope {
             let mut data = lock(scope);
             data.transaction = Some(transaction.clone());
@@ -199,8 +199,7 @@ impl RequestState {
 
     fn report_server_error(&self, status: u16) {
         let Some(client) = client::current_enabled() else { return };
-        let already_reported = lock(&self.hub.scope()).event_id.is_some();
-        if client.config.capture_server_errors && !already_reported {
+        if client.config.capture_server_errors && !self.hub.has_reported() {
             let reason = StatusCode::from_u16(status).ok().and_then(|code| code.canonical_reason()).unwrap_or("");
             let info = ExceptionInfo {
                 class: format!("HTTP {status}"),
@@ -214,7 +213,7 @@ impl RequestState {
     /// A handler panicked: make sure the panic was reported (the hook
     /// normally did, with a backtrace) and answer 500.
     fn panicked(&mut self) -> Response {
-        let reported = crate::panic::take_last_panic().is_some() || lock(&self.hub.scope()).event_id.is_some();
+        let reported = crate::panic::take_last_panic().is_some() || self.hub.has_reported();
         if !reported {
             if let Some(client) = client::current_enabled() {
                 let message = self.panic_payload.take().unwrap_or_default();

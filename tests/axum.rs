@@ -310,3 +310,44 @@ async fn performance_monitoring_is_off_by_default() {
     drop(guard);
     assert!(server.requests().iter().all(|r| !r.path.starts_with("/api/v1/apm/")));
 }
+
+#[tokio::test]
+async fn an_error_captured_in_a_child_scope_counts_for_the_request() {
+    let _lock = serial();
+    let server = FakeServer::start();
+    let guard = goodsorcery::init(config(&server));
+    let app = Router::new()
+        .route(
+            "/with-scope",
+            get(|| async {
+                goodsorcery::with_scope(|| goodsorcery::capture_error(&std::io::Error::other("in with_scope")));
+                StatusCode::INTERNAL_SERVER_ERROR
+            }),
+        )
+        .route(
+            "/scoped",
+            get(|| async {
+                goodsorcery::scoped(async { goodsorcery::capture_error(&std::io::Error::other("in scoped")) }).await;
+                StatusCode::INTERNAL_SERVER_ERROR
+            }),
+        )
+        .route(
+            "/inline-job",
+            get(|| async {
+                goodsorcery::job("Inline", None, async {
+                    goodsorcery::capture_error(&std::io::Error::other("in a job"));
+                })
+                .await;
+                StatusCode::INTERNAL_SERVER_ERROR
+            }),
+        )
+        .layer(goodsorcery::axum::layer());
+    for path in ["/with-scope", "/scoped", "/inline-job"] {
+        assert_eq!(call(&app, "GET", path, &[]).await, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    drop(guard);
+
+    let events = server.events();
+    let messages: Vec<_> = events.iter().map(|event| event["exception"]["message"].clone()).collect();
+    assert_eq!(messages, ["in with_scope", "in scoped", "in a job"], "no extra HTTP 500 events");
+}
