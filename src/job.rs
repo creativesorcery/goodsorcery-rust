@@ -67,6 +67,8 @@ where
             id: None,
             executions: None,
             hub: None,
+            #[cfg(feature = "tracing")]
+            span: None,
             finished: false,
         },
     }
@@ -80,6 +82,10 @@ struct JobState {
     id: Option<String>,
     executions: Option<u32>,
     hub: Option<Hub>,
+    /// Entered while the run is polled, so work it hands to other threads
+    /// inside its span links back (see [`crate::tracing`]).
+    #[cfg(feature = "tracing")]
+    span: Option<::tracing::Span>,
     finished: bool,
 }
 
@@ -171,6 +177,10 @@ impl JobState {
             // that unit of work, not a transaction of its own.
             self.finished = true;
         }
+        #[cfg(feature = "tracing")]
+        {
+            self.span = Some(crate::tracing::unit_of_work_span(&hub));
+        }
         hub
     }
 
@@ -209,7 +219,14 @@ where
                 hub
             }
         };
-        match scope::with_hub(hub.clone(), || catch_unwind(AssertUnwindSafe(|| inner.poll(cx)))) {
+        #[cfg(feature = "tracing")]
+        let span = &state.span;
+        let polled = scope::with_hub(hub.clone(), || {
+            #[cfg(feature = "tracing")]
+            let _entered = span.as_ref().map(::tracing::Span::enter);
+            catch_unwind(AssertUnwindSafe(|| inner.poll(cx)))
+        });
+        match polled {
             Ok(Poll::Pending) => Poll::Pending,
             Ok(Poll::Ready(output)) => {
                 state.finish(&hub, output.is_failure());

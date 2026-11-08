@@ -436,3 +436,65 @@ async fn the_configured_sql_dialect_applies_to_queries_without_one() {
         assert!(!sent.contains(secret), "{secret} leaked");
     }
 }
+
+/// What sqlx-sqlite does: the query runs, and its event is logged, on the
+/// connection's own thread, inside the caller's span.
+fn query_on_a_connection_thread(sql: &'static str) {
+    let span = tracing::Span::current();
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
+    std::thread::spawn(move || {
+        tracing::dispatcher::with_default(&dispatch, || {
+            let _entered = span.enter();
+            tracing::debug!(
+                target: "sqlx::query",
+                summary = sql,
+                db.statement = "",
+                rows_returned = 1u64,
+                elapsed_secs = 0.004f64,
+                "query"
+            );
+        })
+    })
+    .join()
+    .unwrap();
+}
+
+#[tokio::test]
+async fn queries_logged_on_another_thread_in_the_request_span_are_recorded() {
+    let _lock = serial();
+    let server = FakeServer::start();
+    let layer = goodsorcery::tracing::layer().breadcrumb_level(tracing::Level::DEBUG);
+    let _subscriber = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let guard = goodsorcery::init(config(&server).performance_monitoring(true));
+    let app = Router::new()
+        .route(
+            "/notes",
+            get(|| async {
+                query_on_a_connection_thread("SELECT * FROM notes WHERE id = 1");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }),
+        )
+        .layer(goodsorcery::axum::layer());
+    assert_eq!(call(&app, "GET", "/notes", &[]).await, StatusCode::INTERNAL_SERVER_ERROR);
+    goodsorcery::job("PruneNotes", None, async { query_on_a_connection_thread("DELETE FROM notes WHERE id = 2") })
+        .await;
+    // Outside any request or job: nothing to link to.
+    query_on_a_connection_thread("SELECT 1");
+    drop(guard);
+
+    let event = &server.events()[0];
+    assert_eq!(event["exception"]["class"], "HTTP 500");
+    let crumbs = event["breadcrumbs"].as_array().unwrap();
+    assert!(crumbs.iter().any(|c| c["data"]["sql"] == "SELECT * FROM notes WHERE id = ?"), "{crumbs:?}");
+    let traces = &server.requests_to("/api/v1/apm/traces")[0].body["traces"];
+    let sql_of = |name: &str| -> Vec<String> {
+        let trace = traces.as_array().unwrap().iter().find(|t| t["name"] == name).expect(name);
+        trace["spans"].as_array().unwrap().iter().filter_map(|s| s["sql"].as_str().map(String::from)).collect()
+    };
+    assert_eq!(sql_of("GET /notes"), ["SELECT * FROM notes WHERE id = ?"]);
+    assert_eq!(sql_of("PruneNotes"), ["DELETE FROM notes WHERE id = ?"]);
+    let metrics = &server.requests_to("/api/v1/apm/metrics")[0].body;
+    let transactions = metrics["minutes"][0]["transactions"].as_array().unwrap();
+    let notes = transactions.iter().find(|t| t["name"] == "GET /notes").unwrap();
+    assert!(notes["buckets"][0][2].as_f64().unwrap() >= 4.0, "db time {notes}");
+}

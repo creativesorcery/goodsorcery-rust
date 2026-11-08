@@ -26,6 +26,17 @@
 //! Breadcrumbs: events at `INFO` and above (configurable) become `log`
 //! breadcrumbs with their message and fields (filtered like context);
 //! query events become `sql` breadcrumbs with normalised SQL.
+//!
+//! Work done on another thread on behalf of a request or job is linked
+//! back through its spans: a span created while a request or job runs
+//! remembers it, and an event on a thread with no request bound goes to
+//! the request of the span it was emitted in. sqlx's SQLite driver works
+//! this way (each connection runs its queries on its own thread, inside
+//! the caller's span). The axum layer and [`job`](crate::job) open a
+//! `TRACE` span (target `goodsorcery`) for each request and job run so
+//! there always is one: a global filter that drops it (or a global
+//! `EnvFilter` without `goodsorcery=trace`) leaves SQLite queries untimed
+//! unless the app opens its own spans inside the request.
 
 use std::fmt;
 use std::sync::Arc;
@@ -40,8 +51,38 @@ use tracing_subscriber::registry::LookupSpan;
 
 use crate::client;
 use crate::event::Level;
-use crate::scope::{self, Breadcrumb};
+use crate::scope::{self, Breadcrumb, Hub};
 use crate::util::truncate;
+
+/// The request or job run a span was created in (stored on the first span
+/// of a chain created while it runs; children find it on their parents).
+struct HubLink(Hub);
+
+/// A span carrying `hub`, for the axum layer and [`job`](crate::job) to
+/// enter while the unit of work runs. See the module docs.
+pub(crate) fn unit_of_work_span(hub: &Hub) -> ::tracing::Span {
+    scope::with_hub(hub.clone(), || ::tracing::trace_span!(target: "goodsorcery", "goodsorcery"))
+}
+
+/// The hub of the nearest span in `spans` (innermost first) that has one.
+fn linked_hub<'a, R>(spans: impl IntoIterator<Item = tracing_subscriber::registry::SpanRef<'a, R>>) -> Option<Hub>
+where
+    R: LookupSpan<'a> + 'a,
+{
+    spans.into_iter().find_map(|span| span.extensions().get::<HubLink>().map(|link| link.0.clone()))
+}
+
+/// The hub bound to this thread, if it has a scope of its own.
+fn bound_hub() -> Option<Hub> {
+    scope::current_hub().filter(|hub| hub.scope.is_some())
+}
+
+fn same_unit(a: &Hub, b: &Hub) -> bool {
+    match (&a.scope, &b.scope) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
 
 /// The layer, with breadcrumbs from `INFO` up and performance spans on.
 pub fn layer() -> GoodSorceryLayer {
@@ -197,7 +238,7 @@ impl<S> Layer<S> for GoodSorceryLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
         if !client::enabled_fast() || client::on_sdk_thread() {
             return;
         }
@@ -212,42 +253,39 @@ where
         }
         let mut fields = Fields::default();
         event.record(&mut fields);
-        #[cfg(feature = "performance")]
-        if self.performance {
-            record_query_event(&fields);
-        }
-        if wants_breadcrumb {
-            let breadcrumb = if fields.sql_text().is_some() {
-                sql_breadcrumb(&fields)
-            } else {
-                log_breadcrumb(fields, metadata.name())
-            };
-            scope::configure_scope(|scope| scope.add_breadcrumb(breadcrumb.level(breadcrumb_level(metadata.level()))));
+        // On a thread working for a request without its scope bound (the
+        // SQLite driver's connection thread), the event goes to the request
+        // of the span it was emitted in.
+        let linked = match bound_hub() {
+            Some(_) => None,
+            None => ctx.event_scope(event).and_then(|spans| linked_hub(spans)),
+        };
+        match linked {
+            Some(hub) => scope::with_hub(hub, || self.handle_event(fields, metadata, wants_breadcrumb)),
+            None => self.handle_event(fields, metadata, wants_breadcrumb),
         }
     }
 
-    #[cfg(feature = "performance")]
     fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
-        if !self.performance || !client::enabled_fast() {
+        if !client::enabled_fast() || client::on_sdk_thread() {
             return;
         }
-        let declared = attrs.metadata().fields();
-        let interesting =
-            ["db.statement", "db.query.text", "url.full", "http.url"].iter().any(|name| declared.field(name).is_some());
-        if !interesting {
-            return;
-        }
-        let Some(recorder) = crate::performance::current_recorder() else { return };
-        let mut fields = Fields::default();
-        attrs.record(&mut fields);
-        if let Some(span) = ctx.span(id) {
-            span.extensions_mut().insert(Timing {
-                recorder,
-                start: Instant::now(),
-                fields,
-                file: attrs.metadata().file(),
-                line: attrs.metadata().line(),
-            });
+        let Some(span) = ctx.span(id) else { return };
+        let hub = match bound_hub() {
+            Some(hub) => {
+                let parent_has_it = span.parent().is_some_and(|parent| {
+                    parent.extensions().get::<HubLink>().is_some_and(|link| same_unit(&link.0, &hub))
+                });
+                if !parent_has_it {
+                    span.extensions_mut().insert(HubLink(hub.clone()));
+                }
+                Some(hub)
+            }
+            None => linked_hub(span.scope()),
+        };
+        #[cfg(feature = "performance")]
+        if self.performance {
+            start_timing(attrs, &span, hub);
         }
     }
 
@@ -264,24 +302,77 @@ where
     fn on_close(&self, id: span::Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else { return };
         let Some(timing) = span.extensions_mut().remove::<Timing>() else { return };
-        let duration = timing.start.elapsed();
-        let fields = &timing.fields;
-        if let Some((sql, _)) = fields.sql_text() {
-            let dialect = fields.db_system.as_deref().and_then(crate::performance::Dialect::from_name);
-            // Where the span was declared is the call site only when that is
-            // app code; a span declared inside a library (a database crate's
-            // own instrumentation) resolves the first app frame instead.
-            let site = match (timing.file, timing.line) {
-                (Some(file), Some(line)) if declared_in_app(file) => {
-                    crate::performance::recorder::SiteSource::Static { file, line }
-                }
-                _ => crate::performance::recorder::SiteSource::Capture,
-            };
-            timing.recorder.record_sql(sql, timing.start, duration, dialect, fields.rows, None, site);
-        } else if let Some(url) = fields.url.as_deref().filter(|url| url.contains("://")) {
-            let method = fields.http_method.as_deref().unwrap_or("");
-            timing.recorder.record_http(method, url, fields.status, timing.start, duration);
+        finish_timing(timing);
+    }
+}
+
+impl GoodSorceryLayer {
+    fn handle_event(&self, fields: Fields, metadata: &::tracing::Metadata<'_>, wants_breadcrumb: bool) {
+        #[cfg(feature = "performance")]
+        if self.performance {
+            record_query_event(&fields);
         }
+        if wants_breadcrumb {
+            let breadcrumb = if fields.sql_text().is_some() {
+                sql_breadcrumb(&fields)
+            } else {
+                log_breadcrumb(fields, metadata.name())
+            };
+            scope::configure_scope(|scope| scope.add_breadcrumb(breadcrumb.level(breadcrumb_level(metadata.level()))));
+        }
+    }
+}
+
+/// Starts timing a database or HTTP span created in a request or job (on
+/// this thread, or linked through its parent spans).
+#[cfg(feature = "performance")]
+fn start_timing<'a, R: LookupSpan<'a> + 'a>(
+    attrs: &span::Attributes<'_>,
+    span: &tracing_subscriber::registry::SpanRef<'a, R>,
+    hub: Option<Hub>,
+) {
+    let declared = attrs.metadata().fields();
+    let interesting =
+        ["db.statement", "db.query.text", "url.full", "http.url"].iter().any(|name| declared.field(name).is_some());
+    if !interesting {
+        return;
+    }
+    let recorder = crate::performance::current_recorder().or_else(|| {
+        let recorder = hub?.recorder?;
+        recorder.shared.on.load(std::sync::atomic::Ordering::Relaxed).then_some(recorder)
+    });
+    let Some(recorder) = recorder else { return };
+    let mut fields = Fields::default();
+    attrs.record(&mut fields);
+    span.extensions_mut().insert(Timing {
+        recorder,
+        start: Instant::now(),
+        fields,
+        file: attrs.metadata().file(),
+        line: attrs.metadata().line(),
+    });
+}
+
+/// Records a timed span that just closed.
+#[cfg(feature = "performance")]
+fn finish_timing(timing: Timing) {
+    let duration = timing.start.elapsed();
+    let fields = &timing.fields;
+    if let Some((sql, _)) = fields.sql_text() {
+        let dialect = fields.db_system.as_deref().and_then(crate::performance::Dialect::from_name);
+        // Where the span was declared is the call site only when that is
+        // app code; a span declared inside a library (a database crate's
+        // own instrumentation) resolves the first app frame instead.
+        let site = match (timing.file, timing.line) {
+            (Some(file), Some(line)) if declared_in_app(file) => {
+                crate::performance::recorder::SiteSource::Static { file, line }
+            }
+            _ => crate::performance::recorder::SiteSource::Capture,
+        };
+        timing.recorder.record_sql(sql, timing.start, duration, dialect, fields.rows, None, site);
+    } else if let Some(url) = fields.url.as_deref().filter(|url| url.contains("://")) {
+        let method = fields.http_method.as_deref().unwrap_or("");
+        timing.recorder.record_http(method, url, fields.status, timing.start, duration);
     }
 }
 

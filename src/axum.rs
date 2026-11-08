@@ -95,7 +95,7 @@ where
         };
         let state = RequestState::new(&client, &request);
         let inner = &mut self.inner;
-        match scope::with_hub(state.hub.clone(), || catch_unwind(AssertUnwindSafe(|| inner.call(request)))) {
+        match state.run(|| catch_unwind(AssertUnwindSafe(|| inner.call(request)))) {
             Ok(future) => ResponseFuture { inner: Some(future), state: Some(state) },
             Err(payload) => {
                 let mut state = state;
@@ -134,11 +134,10 @@ where
         let Some(inner) = slot.as_mut().as_pin_mut() else {
             return Poll::Ready(Ok(state.panicked()));
         };
-        let hub = state.hub.clone();
-        match scope::with_hub(hub.clone(), || catch_unwind(AssertUnwindSafe(|| inner.poll(cx)))) {
+        match state.run(|| catch_unwind(AssertUnwindSafe(|| inner.poll(cx)))) {
             Ok(Poll::Pending) => Poll::Pending,
             Ok(Poll::Ready(Ok(response))) => {
-                let response = scope::with_hub(hub, || response.into_response());
+                let response = state.run(|| response.into_response());
                 state.finish(response.status().as_u16());
                 Poll::Ready(Ok(response))
             }
@@ -158,6 +157,10 @@ where
 /// One request's scope, recorder and the bits needed to report it.
 pub(crate) struct RequestState {
     hub: Hub,
+    /// Entered while the request runs, so work it hands to other threads
+    /// inside its span links back (see [`crate::tracing`]).
+    #[cfg(feature = "tracing")]
+    span: ::tracing::Span,
     transaction: String,
     panic_payload: Option<String>,
     finished: bool,
@@ -187,7 +190,23 @@ impl RequestState {
         if let Some(route) = &route {
             hub.recorder = crate::performance::start_web(&transaction, &method, route, &path, request_id);
         }
-        RequestState { hub, transaction, panic_payload: None, finished: false }
+        RequestState {
+            #[cfg(feature = "tracing")]
+            span: crate::tracing::unit_of_work_span(&hub),
+            hub,
+            transaction,
+            panic_payload: None,
+            finished: false,
+        }
+    }
+
+    /// Runs `f` with the request's scope bound (and its span entered).
+    fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        scope::with_hub(self.hub.clone(), || {
+            #[cfg(feature = "tracing")]
+            let _entered = self.span.enter();
+            f()
+        })
     }
 
     /// Records the outcome and reports a 5xx response.
