@@ -1,0 +1,33 @@
+[package]
+name = "goodsorcery"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Philip Q Nguyen"]
+license = "MIT"
+description = "Error tracking and performance monitoring for Rust apps, reporting to Good Sorcery"
+repository = "https://github.com/creativesorcery/goodsorcery-rust"
+readme = "README.md"
+keywords = ["error-tracking", "apm", "panic", "monitoring", "axum"]
+categories = ["development-tools::debugging", "development-tools::profiling", "web-programming"]
+# Private crate: never published to crates.io.
+publish = false
+
+[features]
+default = []
+# capture_anyhow for anyhow::Error.
+anyhow = ["dep:anyhow"]
+
+[dependencies]
+flate2 = "1.0.30"
+pin-project-lite = "0.2.14"
+serde_json = "1.0.120"
+ureq = { version = "3.0.12", default-features = false, features = ["rustls"] }
+anyhow = { version = "1.0.86", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "net", "time"] }
+
+[lints.rust]
+# Integrations added in the following commits.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("axum", "performance", "tracing"))'] }
