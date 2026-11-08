@@ -66,14 +66,28 @@ pub(crate) struct RawFrame {
 
 /// Parses `Backtrace`'s (short) `Display` output: an indexed symbol line per
 /// frame, optionally followed by an `at file:line:col` line.
+///
+/// The short output prints a path under the current directory as
+/// `./<rest>`. Call it right after formatting the backtrace, so the
+/// directory it reads is the one std stripped.
 pub(crate) fn parse(text: &str) -> Vec<RawFrame> {
+    let cwd = std::env::current_dir().ok().and_then(|dir| dir.to_str().map(str::to_string));
+    parse_in(text, cwd.as_deref())
+}
+
+/// [`parse`] with the directory std made paths relative to: `./<rest>` is
+/// turned back into `<cwd>/<rest>`, so every path is classified (app root,
+/// `target/`, the standard library, the home directory) as it was built.
+/// With the process started in `/` (Docker without `WORKDIR`, systemd)
+/// every absolute path comes out that way.
+pub(crate) fn parse_in(text: &str, cwd: Option<&str>) -> Vec<RawFrame> {
     let mut frames: Vec<RawFrame> = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
         if let Some(location) = trimmed.strip_prefix("at ") {
             if let Some(frame) = frames.last_mut() {
                 let (file, line, column) = split_location(location);
-                frame.file = Some(file);
+                frame.file = Some(absolute(file, cwd));
                 frame.line = line;
                 frame.column = column;
             }
@@ -90,6 +104,15 @@ pub(crate) fn parse(text: &str) -> Vec<RawFrame> {
         }
     }
     frames
+}
+
+/// `./rest` (or `.\\rest`) under `cwd` → `cwd/rest`; other paths as they are.
+fn absolute(path: String, cwd: Option<&str>) -> String {
+    let (Some(cwd), Some(rest)) = (cwd, path.strip_prefix("./").or_else(|| path.strip_prefix(".\\"))) else {
+        return path;
+    };
+    let separator = if cwd.contains('\\') && !cwd.contains('/') { '\\' } else { '/' };
+    format!("{}{separator}{rest}", cwd.trim_end_matches(['/', '\\']))
 }
 
 /// `path:line:col` → (path, line, col), reading numbers from the right.
@@ -579,6 +602,39 @@ mod tests {
         assert_eq!(json[3]["file"], "rust/library/std/src/thread.rs");
         assert_eq!(json[3]["package"], "std");
         assert_eq!(json[3]["in_app"], false);
+    }
+
+    #[test]
+    fn paths_relative_to_the_working_directory_are_made_absolute() {
+        // Started in `/`: std prints every absolute path as `./…`.
+        let text = "   0: shop::cart::line_total
+             at ./build/src/cart.rs:42:17
+   1: core::option::Option<T>::unwrap
+             at ./rustc/90b35a6239c3d8bdabc530a6a0816f7ff89a0aaf/library/core/src/option.rs:1016:21
+   2: shop::build_script
+             at ./build/target/debug/build/shop-1/out/gen.rs:3:1
+   3: other::thing
+             at ./home/mara/src/other/lib.rs:1:1
+";
+        let frames = parse_in(text, Some("/"));
+        assert_eq!(frames[0].file.as_deref(), Some("/build/src/cart.rs"));
+        let mut paths = paths();
+        paths.cwd = Some("/".into());
+        paths.home = Some("/home/mara/".into());
+        let json: Vec<_> = frames.iter().map(|f| frame_json(f, &paths)).collect();
+        assert_eq!(json[0]["file"], "src/cart.rs");
+        assert_eq!(json[0]["in_app"], true);
+        assert_eq!(json[1]["file"], "rust/library/core/src/option.rs");
+        assert_eq!(json[1]["in_app"], false);
+        assert_eq!(json[2]["in_app"], false, "build output under target/ is not app code");
+        assert_eq!(json[3]["file"], "~/src/other/lib.rs");
+        // Started in the build root, as before.
+        let frames = parse_in("   0: shop::run\n             at ./src/main.rs:1:1\n", Some("/build"));
+        assert_eq!(frames[0].file.as_deref(), Some("/build/src/main.rs"));
+        assert_eq!(frame_json(&frames[0], &paths)["file"], "src/main.rs");
+        // A Windows working directory.
+        let frames = parse_in("   0: shop::run\n             at .\\src\\main.rs:1:1\n", Some("C:\\build"));
+        assert_eq!(frames[0].file.as_deref(), Some("C:\\build\\src\\main.rs"));
     }
 
     #[test]
