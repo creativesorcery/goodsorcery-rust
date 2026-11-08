@@ -57,7 +57,18 @@ fn reports_panics_and_keeps_the_previous_hook() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[1]["exception"]["message"], "boom 9");
 
+    // A panic raised inside std: its location is shown like a frame path,
+    // never the toolchain's absolute path.
+    let guard = goodsorcery::init(config(&server));
+    let result = std::thread::spawn(|| std::time::Instant::now() + std::time::Duration::MAX).join();
+    assert!(result.is_err());
+    drop(guard);
+    let events = server.events();
+    assert_eq!(events.len(), 3);
+    let location = events[2]["context"]["panic"]["location"].as_str().unwrap();
+    assert!(location.starts_with("rust/library/std/src/time.rs:"), "{location}");
+
     // With the client gone, panics are no longer reported.
     let _ = std::thread::spawn(|| explode(7)).join();
-    assert_eq!(server.events().len(), 2);
+    assert_eq!(server.events().len(), 3);
 }

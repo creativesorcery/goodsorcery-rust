@@ -57,7 +57,13 @@ fn report(info: &std::panic::PanicHookInfo<'_>) {
         let level = if cfg!(panic = "abort") { Level::Fatal } else { Level::Error };
         let mut panic = json!({ "thread": std::thread::current().name().unwrap_or("unnamed") });
         if let Some(site) = &site {
-            panic["location"] = Value::String(format!("{}:{}:{}", site.file, site.line, site.column));
+            // Shown like a frame path: a panic inside a dependency or std
+            // must not send the build machine's absolute path.
+            let file = match &client.paths {
+                Some(paths) => crate::backtrace::display_path_in_hook(paths, &site.file),
+                None => site.file.clone(),
+            };
+            panic["location"] = Value::String(format!("{file}:{}:{}", site.line, site.column));
         }
         let info = ExceptionInfo { class: "panic".into(), message, causes: Vec::new() };
         let options = Options::new().level(level).context("panic", panic);

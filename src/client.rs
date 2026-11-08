@@ -24,6 +24,8 @@ pub(crate) struct Client {
     pub(crate) filter: KeyFilter,
     pub(crate) runtime: RuntimeInfo,
     pub(crate) transport: Option<Arc<Transport>>,
+    /// How frame paths are classified and shown.
+    pub(crate) paths: Option<Arc<Paths>>,
     worker: Option<Worker>,
     #[cfg(feature = "performance")]
     pub(crate) apm: Option<crate::performance::Apm>,
@@ -140,6 +142,7 @@ impl Client {
             enabled: worker.is_some(),
             runtime,
             transport: Some(transport),
+            paths: Some(paths),
             worker,
             #[cfg(feature = "performance")]
             apm,
@@ -153,6 +156,7 @@ impl Client {
             enabled: false,
             runtime: RuntimeInfo::new(&config),
             transport: None,
+            paths: None,
             worker: None,
             #[cfg(feature = "performance")]
             apm: None,

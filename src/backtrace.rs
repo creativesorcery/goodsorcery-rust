@@ -289,11 +289,11 @@ impl Paths {
     }
 
     fn roots(&self) -> impl Iterator<Item = &str> {
-        self.configured_root
-            .as_deref()
-            .into_iter()
-            .chain(self.learned().root.as_deref())
-            .chain(self.cwd.as_deref().filter(|cwd| *cwd != "/"))
+        self.roots_with(self.learned().root.as_deref())
+    }
+
+    fn roots_with<'a>(&'a self, learned: Option<&'a str>) -> impl Iterator<Item = &'a str> {
+        self.configured_root.as_deref().into_iter().chain(learned).chain(self.cwd.as_deref().filter(|cwd| *cwd != "/"))
     }
 
     /// Classifies one frame: its display path, whether it is the app's own
@@ -339,6 +339,15 @@ impl Paths {
 
     /// The path to send and, for dependency paths, the package name.
     fn display(&self, path: &str) -> (Option<String>, Option<String>) {
+        self.display_with(path, true)
+    }
+
+    /// [`display`](Self::display); with `learn` false it never resolves the
+    /// backtrace taken in `init` (too slow for the panic hook), using the
+    /// learned root only if it is already known.
+    fn display_with(&self, path: &str, learn: bool) -> (Option<String>, Option<String>) {
+        let learned =
+            if learn { self.learned().root.as_deref() } else { self.learned.get().and_then(|l| l.root.as_deref()) };
         let path = path.replace('\\', "/");
         if let Some((rest, package)) = registry_path(&path) {
             return (Some(truncate(&rest, 1_024)), Some(package));
@@ -352,7 +361,7 @@ impl Paths {
         if let Some(relative) = path.strip_prefix("./") {
             return (Some(truncate(relative, 1_024)), None);
         }
-        if let Some(rest) = self.roots().find_map(|root| path.strip_prefix(root)) {
+        if let Some(rest) = self.roots_with(learned).find_map(|root| path.strip_prefix(root)) {
             return (Some(truncate(rest, 1_024)), None);
         }
         if let Some(rest) = self.home.as_deref().and_then(|home| path.strip_prefix(home)) {
@@ -542,6 +551,11 @@ pub(crate) fn display_path(paths: &Paths, file: &str) -> String {
     paths.display(file).0.unwrap_or_else(|| file.to_string())
 }
 
+/// [`display_path`] for the panic hook: never resolves a backtrace.
+pub(crate) fn display_path_in_hook(paths: &Paths, file: &str) -> String {
+    paths.display_with(file, false).0.unwrap_or_else(|| file.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +649,19 @@ mod tests {
         // A Windows working directory.
         let frames = parse_in("   0: shop::run\n             at .\\src\\main.rs:1:1\n", Some("C:\\build"));
         assert_eq!(frames[0].file.as_deref(), Some("C:\\build\\src\\main.rs"));
+    }
+
+    #[test]
+    fn panic_locations_lose_build_machine_paths() {
+        let mut paths = paths();
+        paths.home = Some("/Users/mara/".into());
+        let registry = "/Users/mara/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-1.4.1/src/proto/h1.rs";
+        assert_eq!(display_path_in_hook(&paths, registry), "crates/hyper-1.4.1/src/proto/h1.rs");
+        let std = "/rustc/90b35a6239c3d8bdabc530a6a0816f7ff89a0aaf/library/core/src/option.rs";
+        assert_eq!(display_path_in_hook(&paths, std), "rust/library/core/src/option.rs");
+        assert_eq!(display_path_in_hook(&paths, "/Users/mara/elsewhere/lib.rs"), "~/elsewhere/lib.rs");
+        assert_eq!(display_path_in_hook(&paths, "/build/src/main.rs"), "src/main.rs");
+        assert_eq!(display_path_in_hook(&paths, "src/main.rs"), "src/main.rs");
     }
 
     #[test]
