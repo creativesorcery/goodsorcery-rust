@@ -192,7 +192,10 @@ fn gzip(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn warn_about_plain_http(endpoint: &str) {
-    let Some(rest) = endpoint.strip_prefix("http://") else { return };
+    let Some(rest) = endpoint.get(..7).filter(|scheme| scheme.eq_ignore_ascii_case("http://")).map(|_| &endpoint[7..])
+    else {
+        return;
+    };
     let host = rest.split(['/', ':']).next().unwrap_or("");
     if !matches!(host, "localhost" | "127.0.0.1" | "[") && !rest.starts_with("[::1]") {
         log::warn_once("plain_http", "the endpoint uses plain HTTP; the API key is sent unencrypted");

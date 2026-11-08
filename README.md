@@ -240,7 +240,7 @@ Point the client at your instance:
 export GOODSORCERY_ENDPOINT=https://errors.example.com
 ```
 
-or `.endpoint("https://errors.example.com")`. The endpoint may include a path prefix. Plain `http://` works but logs a warning (the key travels unencrypted) except for `localhost`.
+or `.endpoint("https://errors.example.com")`. The endpoint may include a path prefix. It must be an `http://` or `https://` URL with a host and no `user:password@`, query string or fragment; otherwise the client stays off and logs why. Plain `http://` works but logs a warning (the key travels unencrypted) except for `localhost`.
 
 ## Delivery
 

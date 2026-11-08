@@ -88,7 +88,11 @@ pub fn init(config: Config) -> ClientGuard {
     let client = match config.gate() {
         Ok(()) => Client::start(config, location),
         Err(reason) => {
-            log::debug(format!("the client is off: {reason}"));
+            if reason == crate::config::BAD_ENDPOINT {
+                log::warn_once("bad_endpoint", format!("the client is off: {reason}"));
+            } else {
+                log::debug(format!("the client is off: {reason}"));
+            }
             Client::disabled(config)
         }
     };
@@ -109,7 +113,9 @@ pub fn init(config: Config) -> ClientGuard {
 impl Client {
     fn start(config: Config, location: &'static Location<'static>) -> Client {
         let api_key = config.api_key.clone().unwrap_or_default();
-        let transport = Arc::new(Transport::new(&config.endpoint, &api_key, config.connect_timeout, config.timeout));
+        // `gate` checked it.
+        let endpoint = config.valid_endpoint().unwrap_or_default();
+        let transport = Arc::new(Transport::new(&endpoint, &api_key, config.connect_timeout, config.timeout));
         let paths = Arc::new(Paths::new(
             config.app_root.as_ref().and_then(|root| root.to_str().map(str::to_string)),
             config.in_app_include.clone(),
@@ -128,7 +134,7 @@ impl Client {
                 "performance monitoring needs the `performance` feature; it is off",
             );
         }
-        log::debug(format!("reporting to {} with key {}", config.endpoint, masked_key(&api_key)));
+        log::debug(format!("reporting to {endpoint} with key {}", masked_key(&api_key)));
         Client {
             filter: KeyFilter::new(&config.filter_names, &config.filter_parts),
             enabled: worker.is_some(),

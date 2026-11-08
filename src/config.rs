@@ -177,9 +177,11 @@ impl Config {
     }
 
     /// The server to report to, for a self-hosted instance
-    /// (`https://errors.example.com`). Credentials in the URL are removed.
+    /// (`https://errors.example.com`). It must be an `http://` or
+    /// `https://` URL with a host and no `user:password@`, query or
+    /// fragment; otherwise the client stays off and says why on stderr.
     pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.endpoint = clean_endpoint(&endpoint.into());
+        self.endpoint = endpoint.into().trim().trim_end_matches('/').to_string();
         self
     }
 
@@ -457,6 +459,14 @@ impl Config {
         if self.api_key.is_none() {
             return Err("no API key is set");
         }
+        self.environment_gate()?;
+        if parse_endpoint(&self.endpoint).is_none() {
+            return Err(BAD_ENDPOINT);
+        }
+        Ok(())
+    }
+
+    fn environment_gate(&self) -> Result<(), &'static str> {
         if let Some(enabled) = self.enabled {
             return if enabled { Ok(()) } else { Err("it is turned off") };
         }
@@ -472,13 +482,22 @@ impl Config {
         }
         Ok(())
     }
+
+    /// The endpoint to send to (scheme lowercased), if it is valid.
+    pub(crate) fn valid_endpoint(&self) -> Option<String> {
+        parse_endpoint(&self.endpoint)
+    }
 }
+
+/// Why the client is off when the endpoint is unusable.
+pub(crate) const BAD_ENDPOINT: &str =
+    "the endpoint must be an http:// or https:// URL with a host and no user:password, query or fragment";
 
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
             .field("api_key", &self.api_key.as_deref().map(masked_key))
-            .field("endpoint", &self.endpoint)
+            .field("endpoint", &self.valid_endpoint().unwrap_or_else(|| "(invalid)".into()))
             .field("environment", &self.environment)
             .field("enabled", &self.enabled)
             .field("release", &self.release)
@@ -496,17 +515,48 @@ pub(crate) fn parse_flag(value: &str) -> Option<bool> {
     }
 }
 
-/// Removes a trailing slash and any `user:pass@` from an endpoint URL.
-fn clean_endpoint(endpoint: &str) -> String {
+/// An endpoint URL as it is sent to (lowercase scheme, no trailing slash),
+/// or `None` unless it is `http://` or `https://` with a host and no
+/// userinfo, query or fragment. A URL with any of those is refused rather
+/// than rewritten: guessing where its host ends could send the API key to
+/// a different host than the one meant.
+pub(crate) fn parse_endpoint(endpoint: &str) -> Option<String> {
     let endpoint = endpoint.trim().trim_end_matches('/');
-    match endpoint.split_once("://") {
-        Some((scheme, rest)) => {
-            let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
-            let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
-            format!("{scheme}://{host}{path}")
-        }
-        None => endpoint.to_string(),
+    if endpoint.chars().any(|c| c.is_whitespace() || c.is_control()) || endpoint.contains(['?', '#', '\\']) {
+        return None;
     }
+    let (scheme, rest) = endpoint.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    if authority.contains('@') || !valid_authority(authority) {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}{path}"))
+}
+
+/// `host`, `host:port`, `[v6]` or `[v6]:port`, with a non-empty host.
+fn valid_authority(authority: &str) -> bool {
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((host, after)) => match after {
+                "" => (host, None),
+                _ => (host, Some(after.strip_prefix(':').unwrap_or("x"))),
+            },
+            None => return false,
+        },
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    let host_ok =
+        !host.is_empty() && !host.contains(['[', ']', '/']) && (authority.starts_with('[') || !host.contains(':'));
+    let port_ok =
+        port.is_none_or(|port| !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit()));
+    host_ok && port_ok
 }
 
 #[cfg(test)]
@@ -523,13 +573,13 @@ mod tests {
     fn reads_the_environment() {
         let config = from(&[
             ("GOODSORCERY_API_KEY", " gs_test_abc123456789 "),
-            ("GOODSORCERY_ENDPOINT", "https://user:pw@errors.example.com/"),
+            ("GOODSORCERY_ENDPOINT", "HTTPS://errors.example.com/"),
             ("GOODSORCERY_ENV", "staging"),
             ("GOODSORCERY_PERFORMANCE_MONITORING", "1"),
             ("GIT_SHA", "abc123"),
         ]);
         assert_eq!(config.api_key.as_deref(), Some("gs_test_abc123456789"));
-        assert_eq!(config.endpoint, "https://errors.example.com");
+        assert_eq!(config.valid_endpoint().as_deref(), Some("https://errors.example.com"));
         assert_eq!(config.environment, "staging");
         assert!(config.performance_monitoring);
         assert_eq!(config.release.as_deref(), Some("abc123"));
@@ -573,6 +623,48 @@ mod tests {
         let text = format!("{:?}", Config::new().api_key("gs_live_9f2c0000e81a"));
         assert!(text.contains("gs_live_…e81a"));
         assert!(!text.contains("9f2c"));
+    }
+
+    #[test]
+    fn endpoints_must_be_plain_http_urls() {
+        for (given, sent) in [
+            ("https://errors.example.com/", "https://errors.example.com"),
+            ("HTTP://localhost:3000", "http://localhost:3000"),
+            ("https://example.com/goodsorcery/", "https://example.com/goodsorcery"),
+            ("http://[::1]:8080", "http://[::1]:8080"),
+            ("  https://10.0.0.5  ", "https://10.0.0.5"),
+        ] {
+            assert_eq!(parse_endpoint(given).as_deref(), Some(sent), "{given}");
+        }
+        for refused in [
+            "errors.example.com",
+            "ftp://errors.example.com",
+            "https://",
+            "https:///path",
+            "https://user:pw@errors.example.com",
+            "https://user@errors.example.com",
+            "https://host?x@evil.com",
+            "https://host#@evil.com",
+            "https://user:p/w@evil.com",
+            "https://errors.example.com/?token=1",
+            "https://errors.example.com:port",
+            "https://errors.example.com:",
+            "https://[::1",
+            "https://a b.com",
+            "https://evil.com\\@good.com",
+        ] {
+            assert_eq!(parse_endpoint(refused), None, "{refused}");
+        }
+    }
+
+    #[test]
+    fn an_invalid_endpoint_keeps_the_client_off() {
+        let config = Config::new().api_key("gs_test_123").endpoint("https://user:pw@errors.example.com");
+        assert_eq!(config.gate(), Err(BAD_ENDPOINT));
+        assert!(!format!("{config:?}").contains("pw"));
+        // Off for another reason first: no endpoint complaint.
+        assert_eq!(config.clone().enabled(false).gate(), Err("it is turned off"));
+        assert_eq!(Config::new().endpoint("nope").gate(), Err("no API key is set"));
     }
 
     #[test]
