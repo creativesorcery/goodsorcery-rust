@@ -19,6 +19,14 @@
 //! A panic in a handler is reported (by the panic hook, with the request's
 //! scope) and answered with an empty 500 response. A 5xx response is
 //! reported unless an error was already captured for that request.
+//!
+//! Middleware that sets the user (authentication) must run inside this
+//! layer, where the request's scope is bound: add this layer last, so it
+//! wraps the others (`.layer(auth).layer(goodsorcery::axum::layer())`).
+//! Run outside it, `set_user` would reach the process-wide scope, and is
+//! ignored there (with a warning) except on the thread that called
+//! [`init`](crate::init). A request never takes the user of the
+//! process-wide scope.
 
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -168,7 +176,7 @@ impl RequestState {
             .and_then(|name| request.headers().get(name.as_str()))
             .and_then(|value| value.to_str().ok())
             .map(|value| truncate(value, 128));
-        let mut hub = scope::forked_hub(false);
+        let mut hub = scope::unit_of_work_hub();
         hub.reported = Some(Default::default());
         if let Some(scope) = &hub.scope {
             let mut data = lock(scope);

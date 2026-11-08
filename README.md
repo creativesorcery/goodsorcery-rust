@@ -162,7 +162,7 @@ goodsorcery::capture_anyhow(&error);                 // feature "anyhow"
 
 **Panics:** `init` installs a panic hook (keeping the previous one, which still runs). A panic is reported with class `panic`, its message, the thread and location, and the panicking thread's backtrace and scope. With `panic = "abort"` the hook also sends the event before the process aborts.
 
-**Scopes:** what goes with the errors of one unit of work. The axum layer and `goodsorcery::job` give each request or job run its own scope; outside them changes go to the process-wide scope.
+**Scopes:** what goes with the errors of one unit of work. The axum layer and `goodsorcery::job` give each request or job run its own scope; outside them changes go to the process-wide scope. Requests and jobs take tags and context from the process-wide scope but never its user, and `set_user` outside a request or job is ignored (with a warning) except on the thread that called `init`: on the process-wide scope the user would go with other users' errors. So middleware that sets the user must sit inside the goodsorcery layer (add `goodsorcery::axum::layer()` last: `.layer(auth).layer(goodsorcery::axum::layer())`), and a task spawned from a handler should be wrapped in `goodsorcery::bind_current_scope`.
 
 ```rust
 goodsorcery::set_user(Some(User::new().id(5521).email("mara@example.com")));

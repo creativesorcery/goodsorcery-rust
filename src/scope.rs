@@ -188,11 +188,27 @@ impl ScopeData {
 /// The current scope, as seen by [`configure_scope`].
 pub struct Scope<'a> {
     data: &'a mut ScopeData,
+    /// This is the process-wide root scope (no scope is bound here).
+    root: bool,
 }
 
 impl Scope<'_> {
     /// Sets (or clears) the affected user.
+    ///
+    /// Outside a request or job (no scope bound on this thread) the user
+    /// would go to the process-wide scope and so with every thread's
+    /// errors: that is only allowed on the thread that called
+    /// [`init`](crate::init). Elsewhere it is ignored, with a warning.
     pub fn set_user(&mut self, user: Option<User>) {
+        if self.root && user.is_some() && !crate::client::on_init_thread() {
+            crate::util::log::warn_once(
+                "user_on_root_scope",
+                "set_user was called outside a request or job and ignored: on the process-wide scope the user \
+                 would go with other users' errors. Set it inside the request (auth middleware must sit inside \
+                 goodsorcery::axum::layer()), or run the task with goodsorcery::scoped or bind_current_scope",
+            );
+            return;
+        }
         self.data.user = user;
     }
 
@@ -329,6 +345,21 @@ pub(crate) fn forked_hub(breadcrumbs: bool) -> Hub {
     hub
 }
 
+/// The hub for a new request or job run: a child of the current hub
+/// without breadcrumbs. Forked from the process-wide root scope it never
+/// takes the user: one set there (by a thread with no scope bound) is not
+/// this request's user, and must not go with its errors.
+pub(crate) fn unit_of_work_hub() -> Hub {
+    let from_root = current_hub().and_then(|hub| hub.scope).is_none();
+    let hub = forked_hub(false);
+    if from_root {
+        if let Some(scope) = &hub.scope {
+            lock(scope).user = None;
+        }
+    }
+    hub
+}
+
 /// Changes the current scope: the one bound to this request, job or
 /// future, else the process-wide root scope.
 ///
@@ -346,15 +377,17 @@ pub fn configure_scope<R>(f: impl FnOnce(&mut Scope<'_>) -> R) -> R {
             let _ = HOLDING.try_with(|holding| holding.set(previous));
         }
     }
-    let scope = current_scope();
+    let bound = current_hub().and_then(|hub| hub.scope);
+    let root = bound.is_none();
+    let scope = bound.unwrap_or_else(root_scope);
     match lock_scope(&scope) {
         Some(mut data) => {
             let _release = Release(HOLDING.try_with(|holding| holding.replace(true)).unwrap_or(false));
-            f(&mut Scope { data: &mut data })
+            f(&mut Scope { data: &mut data, root })
         }
         // Called from inside another `configure_scope` on the same scope:
         // the changes go nowhere rather than deadlocking.
-        None => f(&mut Scope { data: &mut ScopeData::default() }),
+        None => f(&mut Scope { data: &mut ScopeData::default(), root: false }),
     }
 }
 
@@ -471,6 +504,17 @@ mod tests {
             let data = lock(&scope);
             assert!(data.tags.contains_key("outer"));
             assert!(!data.tags.contains_key("inner"));
+        });
+    }
+
+    #[test]
+    fn an_inline_job_keeps_the_request_user() {
+        // (Forked from the process-wide scope the user is dropped: see
+        // tests/axum.rs, which owns the process-wide scope while it runs.)
+        let request = ScopeData { user: Some(User::new().id(2)), ..ScopeData::default() };
+        with_hub(Hub::with_scope(request), || {
+            let hub = unit_of_work_hub();
+            assert_eq!(lock(hub.scope.as_ref().unwrap()).user, Some(User::new().id(2)));
         });
     }
 

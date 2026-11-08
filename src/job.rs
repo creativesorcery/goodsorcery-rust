@@ -145,7 +145,7 @@ impl JobState {
 
     /// The scope (and recorder) for this run, made on the first poll.
     fn start(&mut self) -> Hub {
-        let mut hub = scope::forked_hub(false);
+        let mut hub = scope::unit_of_work_hub();
         // A job run inline inside a request or another job shares its
         // record of reported errors.
         if hub.reported.is_none() {

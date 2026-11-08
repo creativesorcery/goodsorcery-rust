@@ -6,7 +6,8 @@ use std::cell::Cell;
 use std::fmt;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use crate::backtrace::Paths;
@@ -39,6 +40,14 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static SDK_THREAD: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The thread that last called [`init`].
+static INIT_THREAD: Mutex<Option<ThreadId>> = Mutex::new(None);
+
+/// Whether this is the thread that called [`init`] (true before any `init`).
+pub(crate) fn on_init_thread() -> bool {
+    lock(&INIT_THREAD).is_none_or(|id| id == std::thread::current().id())
 }
 
 /// Marks the current thread as one of the client's own, whose tracing
@@ -86,6 +95,7 @@ pub fn is_enabled() -> bool {
 #[inline(never)]
 pub fn init(config: Config) -> ClientGuard {
     let location = Location::caller();
+    *lock(&INIT_THREAD) = Some(std::thread::current().id());
     log::set_debug(config.debug);
     let client = match config.gate() {
         Ok(()) => Client::start(config, location),

@@ -351,3 +351,39 @@ async fn an_error_captured_in_a_child_scope_counts_for_the_request() {
     let messages: Vec<_> = events.iter().map(|event| event["exception"]["message"].clone()).collect();
     assert_eq!(messages, ["in with_scope", "in scoped", "in a job"], "no extra HTTP 500 events");
 }
+
+#[tokio::test]
+async fn requests_never_take_a_user_set_outside_any_request() {
+    let _lock = serial();
+    let server = FakeServer::start();
+    let guard = goodsorcery::init(config(&server));
+    // No request scope is bound here: on the init thread the user goes to
+    // the process-wide scope (allowed: a CLI app sets its user like this).
+    goodsorcery::set_user(Some(goodsorcery::User::new().id(1).email("first@example.com")));
+    goodsorcery::set_tag("region", "eu-west-1");
+    // From any other thread with no scope bound (auth middleware outside
+    // the layer, an unbound spawned task) it is refused.
+    std::thread::spawn(|| {
+        goodsorcery::set_user(Some(goodsorcery::User::new().id(2).email("second@example.com")));
+        goodsorcery::capture_message("from an unbound thread", goodsorcery::Level::Error);
+    })
+    .join()
+    .unwrap();
+    let app = app();
+    assert_eq!(call(&app, "GET", "/users/7", &[]).await, StatusCode::INTERNAL_SERVER_ERROR);
+    goodsorcery::capture_message("from the init thread", goodsorcery::Level::Error);
+    goodsorcery::set_user(None);
+    goodsorcery::configure_scope(|scope| scope.remove_tag("region"));
+    drop(guard);
+
+    let events = server.events();
+    assert_eq!(events.len(), 3);
+    let unbound = &events[0];
+    assert_eq!(unbound["exception"]["message"], "from an unbound thread");
+    assert_eq!(unbound["user"], json!({ "id": "1", "email": "first@example.com" }), "the second user was refused");
+    let request = &events[1];
+    assert_eq!(request["exception"]["class"], "HTTP 500");
+    assert!(request.get("user").is_none(), "{request}");
+    assert_eq!(request["tags"]["region"], "eu-west-1", "tags are still inherited");
+    assert_eq!(events[2]["user"]["id"], "1");
+}
