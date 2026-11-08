@@ -304,6 +304,11 @@ impl Paths {
                 return self.class_for(file, true, crate_name);
             }
         }
+        if crate_name == Some("goodsorcery") && self.learned().app_crate.as_deref() != Some("goodsorcery") {
+            // This client is never the app's code, even when it is built
+            // from a path inside the app (a workspace member or a vendored copy).
+            return self.class_for(file, false, crate_name);
+        }
         let in_app = match file {
             Some(path) => self.path_in_app(path, crate_name),
             None => crate_name.is_some_and(|name| self.learned().app_crate.as_deref() == Some(name)),
@@ -728,6 +733,18 @@ mod tests {
         let unknown = paths.classify(None, Some("tokio::spawn"));
         assert!(!unknown.in_app);
         assert_eq!(unknown.package.as_deref(), Some("tokio"));
+    }
+
+    #[test]
+    fn this_client_is_never_app_code() {
+        let paths = paths();
+        let symbol = "<goodsorcery::axum::ResponseFuture<F> as core::future::future::Future>::poll";
+        let class = paths.classify(Some("/build/src/axum.rs"), Some(symbol));
+        assert!(!class.in_app, "a path dependency on the client is still not the app");
+        assert_eq!(class.package.as_deref(), Some("goodsorcery"));
+        assert!(paths.classify(Some("/build/src/axum.rs"), Some("shop::axum::handler")).in_app);
+        let included = Paths::new(Some("/build".into()), vec!["goodsorcery".into()], vec![], None, None);
+        assert!(included.classify(Some("/build/src/axum.rs"), Some(symbol)).in_app);
     }
 
     #[test]
