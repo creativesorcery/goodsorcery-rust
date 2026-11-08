@@ -73,8 +73,12 @@ fn reports_panics_and_keeps_the_previous_hook() {
     drop(guard);
     let events = server.events();
     assert_eq!(events.len(), 3);
+    // Where std reports this panic depends on the toolchain: inside
+    // library/std/src/time.rs, or at this call site where `Instant + Duration`
+    // is #[track_caller] (Rust 1.99 and later).
     let location = events[2]["context"]["panic"]["location"].as_str().unwrap();
-    assert!(location.starts_with("rust/library/std/src/time.rs:"), "{location}");
+    assert!(location.starts_with("rust/library/std/src/") || location.starts_with("tests/panics.rs:"), "{location}");
+    assert!(!location.starts_with('/') && !location.contains("/rustc/") && !location.contains("rustlib"), "{location}");
 
     // With the client gone, panics are no longer reported.
     let _ = std::thread::spawn(|| explode(7)).join();

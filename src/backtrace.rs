@@ -561,12 +561,25 @@ pub(crate) fn first_app_frame(trace: &Backtrace, paths: &Paths) -> Option<RawFra
 
 /// The display path of an app file (for a `#[track_caller]` location).
 pub(crate) fn display_path(paths: &Paths, file: &str) -> String {
-    paths.display(file).0.unwrap_or_else(|| file.to_string())
+    relative_std_location(file).unwrap_or_else(|| paths.display(file).0.unwrap_or_else(|| file.to_string()))
 }
 
 /// [`display_path`] for the panic hook: never resolves a backtrace.
 pub(crate) fn display_path_in_hook(paths: &Paths, file: &str) -> String {
-    paths.display_with(file, false).0.unwrap_or_else(|| file.to_string())
+    relative_std_location(file).unwrap_or_else(|| paths.display_with(file, false).0.unwrap_or_else(|| file.to_string()))
+}
+
+/// Standard library crates, as named under `library/`.
+const STD_CRATES: [&str; 6] = ["std", "core", "alloc", "proc_macro", "test", "panic_unwind"];
+
+/// Some toolchains (Linux builds of 1.85, for one) give `Location::file()`
+/// for std code as `library/std/src/time.rs` rather than
+/// `/rustc/<hash>/library/…`: shown as `rust/library/std/src/time.rs`, like
+/// std frames. Only for locations, never backtrace paths.
+fn relative_std_location(file: &str) -> Option<String> {
+    let rest = file.strip_prefix("library/")?;
+    let krate = rest.split('/').next()?;
+    STD_CRATES.contains(&krate).then(|| format!("rust/{file}"))
 }
 
 #[cfg(test)]
@@ -672,6 +685,9 @@ mod tests {
         assert_eq!(display_path_in_hook(&paths, registry), "crates/hyper-1.4.1/src/proto/h1.rs");
         let std = "/rustc/90b35a6239c3d8bdabc530a6a0816f7ff89a0aaf/library/core/src/option.rs";
         assert_eq!(display_path_in_hook(&paths, std), "rust/library/core/src/option.rs");
+        assert_eq!(display_path_in_hook(&paths, "library/std/src/time.rs"), "rust/library/std/src/time.rs");
+        assert_eq!(display_path(&paths, "library/core/src/option.rs"), "rust/library/core/src/option.rs");
+        assert_eq!(display_path_in_hook(&paths, "library/mine/src/lib.rs"), "library/mine/src/lib.rs");
         assert_eq!(display_path_in_hook(&paths, "/Users/mara/elsewhere/lib.rs"), "~/elsewhere/lib.rs");
         assert_eq!(display_path_in_hook(&paths, "/build/src/main.rs"), "src/main.rs");
         assert_eq!(display_path_in_hook(&paths, "src/main.rs"), "src/main.rs");
