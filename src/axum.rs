@@ -11,7 +11,10 @@
 //!
 //! Add it with `Router::layer` so it sees the matched route: each request is
 //! named after its method and route pattern (`POST /checkout`,
-//! `GET /users/{id}`), never the real path. It never reads request bodies,
+//! `GET /users/{id}`). When there is no matched route (a fallback handler,
+//! `nest_service`, or this layer wrapping the whole `Router` as a tower
+//! service), the request is named after its real path instead, so ids or
+//! tokens in that path go with it. It never reads request bodies,
 //! headers or cookies; [`Config::send_request_headers`](crate::Config::send_request_headers),
 //! [`send_request_params`](crate::Config::send_request_params) and
 //! [`request_id_header`](crate::Config::request_id_header) opt in to more.

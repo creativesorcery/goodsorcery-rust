@@ -1,6 +1,6 @@
 # goodsorcery (Rust client)
 
-Error tracking and performance monitoring for Rust apps, reporting to [Good Sorcery](https://app.goodsorcery.com), hosted or self-hosted.
+Error tracking and performance monitoring for Rust apps, reporting to [Good Sorcery](https://app.goodsorcery.com), hosted or [self-hosted](#self-hosted).
 
 - **Errors:** panics anywhere in the process, any `std::error::Error` you pass to `capture_error` (with its `source()` chain), messages, and `anyhow::Error`s.
 - **Web:** an axum (tower) layer that names each request after its route (`GET /users/{id}`), reports panics and 5xx responses with the method and path, and times requests.
@@ -12,15 +12,20 @@ MSRV: Rust 1.85.
 
 ## Install
 
-The crate is not on crates.io. Add it from GitHub:
-
 ```sh
-cargo add goodsorcery --git https://github.com/creativesorcery/goodsorcery-rust
+cargo add goodsorcery
 ```
 
 ```toml
 [dependencies]
-goodsorcery = { git = "https://github.com/creativesorcery/goodsorcery-rust", branch = "main" }  # or pin a `rev`
+goodsorcery = "0.1"
+```
+
+Or straight from GitHub, pinned to a release tag:
+
+```toml
+[dependencies]
+goodsorcery = { git = "https://github.com/creativesorcery/goodsorcery-rust", tag = "v0.1.0" }
 ```
 
 Features (default: `axum`, `performance`, `tracing`):
@@ -31,18 +36,22 @@ Features (default: `axum`, `performance`, `tracing`):
 | `performance` | performance monitoring (still off at run time until you turn it on) |
 | `tracing` | `goodsorcery::tracing::layer()`: breadcrumbs from tracing events, sqlx and OpenTelemetry-style spans as timings |
 | `anyhow` | `goodsorcery::capture_anyhow` |
+| `platform-verifier` | trust the operating system's certificate store instead of the bundled Mozilla roots (see [TLS and proxies](#tls-and-proxies)) |
 
 ## Set up
 
+Create a project at [app.goodsorcery.com](https://app.goodsorcery.com) and copy its API key from the project's **Settings › Setup & API keys** page:
+
 ```sh
-export GOODSORCERY_API_KEY=gs_live_…                      # from Settings › Setup & API keys
-export GOODSORCERY_ENDPOINT=https://errors.example.com    # self-hosted only
+export GOODSORCERY_API_KEY=gs_live_…
 ```
+
+That is all the hosted service needs: the client reports to `https://app.goodsorcery.com` by default. Running your own instance? See [Self-hosted](#self-hosted).
 
 ```rust
 #[tokio::main]
 async fn main() {
-    // Reads GOODSORCERY_API_KEY, GOODSORCERY_ENV and GOODSORCERY_ENDPOINT,
+    // Reads GOODSORCERY_API_KEY (and the other GOODSORCERY_* variables below)
     // and installs a panic hook that reports panics.
     let _guard = goodsorcery::init(
         goodsorcery::Config::from_env()
@@ -117,7 +126,7 @@ let app = axum::Router::new()
 
 Add it with `Router::layer` so it sees the matched route. For each request it:
 
-- opens a fresh scope, so errors carry the transaction (`POST /checkout`, the route **pattern**, never the real path) and a request section: the URL without query string and the method;
+- opens a fresh scope, so errors carry the transaction (`POST /checkout`, the route **pattern**) and a request section: the URL without query string and the method. Without a matched route (a fallback handler, `nest_service`, or the layer wrapping the whole `Router` as a tower service) the transaction is the real path instead, ids and tokens included;
 - reports a panic in a handler (through the panic hook, with a backtrace) and answers an empty 500;
 - reports a 5xx response, unless an error was already captured for that request;
 - with performance monitoring on, times the request.
@@ -234,13 +243,29 @@ Bounds: at most 2,000 raw spans and 1 MiB of SQL per request; 500 transaction na
 
 ## Self-hosted
 
-Point the client at your instance:
+Good Sorcery is open source ([creativesorcery/goodsorcery_web](https://github.com/creativesorcery/goodsorcery_web)). To report to your own instance instead of the hosted service, take the API key from your instance's **Settings › Setup & API keys** page and point the client at it, with the environment variable:
 
 ```sh
+export GOODSORCERY_API_KEY=gs_live_…
 export GOODSORCERY_ENDPOINT=https://errors.example.com
 ```
 
-or `.endpoint("https://errors.example.com")`. The endpoint may include a path prefix. It must be an `http://` or `https://` URL with a host and no `user:password@`, query string or fragment; otherwise the client stays off and logs why. Plain `http://` works but logs a warning (the key travels unencrypted) except for `localhost`.
+or in code:
+
+```rust
+let _guard = goodsorcery::init(
+    goodsorcery::Config::from_env().endpoint("https://errors.example.com"),
+);
+```
+
+The endpoint may include a path prefix. It must be an `http://` or `https://` URL with a host and no `user:password@`, query string or fragment; otherwise the client stays off and logs why. Plain `http://` works but logs a warning (the key travels unencrypted) except for `localhost`.
+
+Redirects are never followed, so the API key is never sent to another host. Use the final URL: if `http://errors.example.com` redirects to `https://errors.example.com`, every request comes back as a redirect, nothing is delivered, and the client logs `the endpoint redirected (HTTP 301)` once (`verify()` returns `Failed("HTTP 301 redirect …")`).
+
+### TLS and proxies
+
+- **Certificates:** by default only the Mozilla root certificates bundled with the crate (webpki-roots) are trusted, not the operating system's store. An instance with a certificate from a private or internal CA, or an app behind a TLS-inspecting corporate proxy, fails with a TLS error (logged once). Turn on the `platform-verifier` feature (`cargo add goodsorcery -F platform-verifier`) to verify certificates with the operating system's verifier and store instead, including CAs you added there.
+- **Proxies:** requests go through the proxy named by the first of `ALL_PROXY`, `HTTPS_PROXY` and `HTTP_PROXY` that is set (upper or lower case), except for hosts listed in `NO_PROXY`. A proxy that intercepts TLS needs the `platform-verifier` feature with its CA in the system store.
 
 ## Delivery
 
@@ -267,7 +292,7 @@ cargo test --no-default-features
 rustup run 1.85 cargo test --all-features   # MSRV
 ```
 
-The integration tests run against a fake ingest server in `tests/support`.
+The integration tests run against a fake ingest server in `tests/support`. See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute, and [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 

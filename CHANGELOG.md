@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (unreleased)
 
 - First version of the Rust client for Good Sorcery (ingest protocol revision 1.1).
 - **Errors:** `init` returns a guard that sends what is queued when dropped; `capture_error` for any `std::error::Error` (class from its type, message, up to three `source()` causes), `capture_message`, `capture_anyhow` (feature `anyhow`), `Options` for level, tags, context, transaction, user and fingerprint. Backtraces are captured unresolved and resolved on the sender thread: app-relative file, line, column, function, module, `in_app` and `package` (this client's own frames are never in-app, even from a path dependency), with code context for the top in-app frames when the source can be read.
@@ -8,7 +8,7 @@
 - **Scopes:** user, tags, context, transaction, fingerprint and breadcrumbs; bound to futures (`scoped`, `bind_current_scope`) so they follow a request across threads, with no particular async runtime.
 - **Configuration:** `Config::from_env()` (`GOODSORCERY_API_KEY`, `GOODSORCERY_ENDPOINT`, `GOODSORCERY_ENV`, `GOODSORCERY_ENABLED`, `GOODSORCERY_PERFORMANCE_MONITORING`, release variables, `GOODSORCERY_DEBUG`) and builder methods. Off without an API key and in the `development` and `test` environments.
 - **Privacy:** values under sensitive keys are filtered before sending (the Ruby gem's default list); request bodies, cookies, headers, query strings and request ids are never read unless opted in.
-- **Delivery:** a bounded queue and one `goodsorcery-worker` thread posting batches to `/api/v1/events/batch` with `ureq` (rustls, keep-alive, gzip from 1 KiB, responses capped at 64 KiB); retries with backoff for 5xx and network errors, `Retry-After` for 429, 413 splitting, single-event fallback on 404, an invalid key logged once. `verify()` checks the key with `GET /api/v1/verify`.
+- **Delivery:** a bounded queue and one `goodsorcery-worker` thread posting batches to `/api/v1/events/batch` with `ureq` (rustls, keep-alive, gzip from 1 KiB, responses capped at 64 KiB); retries with backoff for 5xx and network errors, `Retry-After` for 429, 413 splitting, single-event fallback on 404, an invalid key logged once. Redirects are never followed (the key is never forwarded); a redirecting endpoint is logged once with the fix. Only the bundled Mozilla roots are trusted unless the `platform-verifier` feature is on (the operating system's verifier and store); a TLS failure (such as an untrusted certificate) is logged once. `verify()` checks the key with `GET /api/v1/verify`.
 - **axum** (feature `axum`): `goodsorcery::axum::layer()` names requests after their route (`GET /users/{id}`), reports panics (answering 500) and 5xx responses, and records requests for performance monitoring.
 - **Jobs:** `goodsorcery::job(name, queue, future)` with `.adapter`, `.enqueued_at`, `.id` and `.executions`.
 - **tracing** (feature `tracing`): `goodsorcery::tracing::layer()` turns events into breadcrumbs and sqlx query events and OpenTelemetry-style database and HTTP spans into timings.

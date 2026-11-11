@@ -113,7 +113,6 @@ async fn main() {
     // and installs a panic hook that reports panics.
     let guard = goodsorcery::init(
         goodsorcery::Config::from_env()
-            .environment("production")
             .release(env!("CARGO_PKG_VERSION"))
             .runtime("tokio", "1")
             .performance_monitoring(true),

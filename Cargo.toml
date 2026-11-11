@@ -7,11 +7,15 @@ authors = ["Philip Q Nguyen"]
 license = "MIT"
 description = "Error tracking and performance monitoring for Rust apps, reporting to Good Sorcery"
 repository = "https://github.com/creativesorcery/goodsorcery-rust"
+homepage = "https://app.goodsorcery.com"
+documentation = "https://docs.rs/goodsorcery"
 readme = "README.md"
 keywords = ["error-tracking", "apm", "panic", "monitoring", "axum"]
 categories = ["development-tools::debugging", "development-tools::profiling", "web-programming"]
-# Private crate: never published to crates.io.
-publish = false
+include = ["/src/**/*.rs", "/build.rs", "/examples/**/*.rs", "/Cargo.toml", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["axum", "performance", "tracing"]
