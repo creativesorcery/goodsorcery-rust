@@ -208,7 +208,7 @@ fn span_entries(data: &RecData, context: &TraceContext) -> (Vec<(Duration, Value
     let mut memo: HashMap<(&str, Option<sql::Dialect>), String> = HashMap::new();
     for index in order {
         let raw = &data.spans[index];
-        let end = raw.offset + raw.duration;
+        let end = raw.offset.saturating_add(raw.duration);
         let (group_key, kind, rows) = match &raw.detail {
             Detail::Sql { sql: text, dialect, rows, name, shape } => {
                 let normalized =
@@ -234,10 +234,10 @@ fn span_entries(data: &RecData, context: &TraceContext) -> (Vec<(Duration, Value
         if let Some(position) = group_key.as_ref().and_then(|key| groups.get(key)) {
             let entry = &mut entries[*position];
             entry.count += 1;
-            entry.duration += raw.duration;
+            entry.duration = entry.duration.saturating_add(raw.duration);
             entry.last_end = entry.last_end.max(end);
             entry.rows = match (entry.rows, rows) {
-                (Some(a), Some(b)) => Some(a + b),
+                (Some(a), Some(b)) => Some(a.saturating_add(b)),
                 (a, b) => a.or(b),
             };
             continue;

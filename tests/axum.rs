@@ -280,6 +280,31 @@ async fn jobs_are_recorded_with_their_queue_wait() {
 }
 
 #[tokio::test]
+async fn huge_span_durations_saturate_instead_of_panicking() {
+    let _lock = serial();
+    let server = FakeServer::start();
+    let guard = goodsorcery::init(config(&server).performance_monitoring(true));
+    let result = goodsorcery::job("Overflow", None, async {
+        for _ in 0..2 {
+            performance::record_sql("SELECT 1", Duration::MAX, None, Some(u64::MAX));
+            performance::record_http("GET", "https://api.example.com/x", Some(200), Duration::MAX);
+            performance::record_span(SpanKind::View, Duration::MAX, "huge.html");
+        }
+        goodsorcery::capture_message("after huge spans", goodsorcery::Level::Info).ok_or("not captured")
+    })
+    .await;
+    assert!(result.is_ok(), "the job finished and the error was captured");
+    drop(guard);
+
+    let metrics = &server.requests_to("/api/v1/apm/metrics")[0].body;
+    let job = &metrics["minutes"][0]["transactions"][0];
+    assert_eq!(job["name"], "Overflow");
+    assert_eq!(job["count"], 1);
+    let trace = &server.requests_to("/api/v1/apm/traces")[0].body["traces"][0];
+    assert_eq!(trace["error_event_id"], server.events()[0]["event_id"]);
+}
+
+#[tokio::test]
 async fn a_server_without_performance_endpoints_turns_monitoring_off() {
     let _lock = serial();
     let server = FakeServer::start();

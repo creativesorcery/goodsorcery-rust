@@ -182,7 +182,7 @@ impl Recorder {
             if data.finished {
                 return;
             }
-            data.db += duration;
+            data.db = data.db.saturating_add(duration);
             data.sql_count += 1;
             let shapes = data.shapes.len();
             let seen = match data.shapes.get_mut(&shape) {
@@ -227,7 +227,7 @@ impl Recorder {
         if data.finished {
             return;
         }
-        data.http += duration;
+        data.http = data.http.saturating_add(duration);
         data.http_count += 1;
         data.push(RawSpan {
             offset: self.offset(start),
@@ -242,7 +242,7 @@ impl Recorder {
         if data.finished {
             return;
         }
-        data.view += duration;
+        data.view = data.view.saturating_add(duration);
         data.push(RawSpan {
             offset: self.offset(start),
             duration,

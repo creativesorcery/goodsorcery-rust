@@ -30,7 +30,7 @@ pub(crate) mod traces;
 use std::collections::HashSet;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -235,7 +235,7 @@ pub(crate) fn finish(recorder: &Arc<Recorder>, status: Option<u16>, failed: bool
     if !shared.on.load(Ordering::Relaxed) {
         return;
     }
-    let app = duration.saturating_sub(data.db + data.http + data.view);
+    let app = duration.saturating_sub(data.db.saturating_add(data.http).saturating_add(data.view));
     let minute = minute_of(SystemTime::now());
     let measurement = Measurement {
         kind: data.kind,
@@ -267,12 +267,23 @@ pub(crate) fn finish(recorder: &Arc<Recorder>, status: Option<u16>, failed: bool
 }
 
 /// Links the current unit of work to an error event (the first wins).
+///
+/// In the panic hook it only tries the lock: the panic may have started
+/// while this thread was recording a span, still holding it, and waiting
+/// there would deadlock. The link is then skipped.
 pub(crate) fn note_error(id: EventId) {
-    if let Some(recorder) = current_recorder() {
-        let mut data = lock(&recorder.data);
-        if data.error_event_id.is_none() {
-            data.error_event_id = Some(id);
+    let Some(recorder) = current_recorder() else { return };
+    let data = if crate::panic::in_hook() {
+        match recorder.data.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
         }
+    } else {
+        Some(lock(&recorder.data))
+    };
+    if let Some(mut data) = data.filter(|data| data.error_event_id.is_none()) {
+        data.error_event_id = Some(id);
     }
 }
 
