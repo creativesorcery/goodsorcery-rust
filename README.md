@@ -18,7 +18,7 @@ cargo add goodsorcery
 
 ```toml
 [dependencies]
-goodsorcery = "0.1"
+goodsorcery = "0.1.0"
 ```
 
 Or straight from GitHub, pinned to a release tag:
