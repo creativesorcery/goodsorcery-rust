@@ -27,6 +27,7 @@ pub(crate) const TRACES_PATH: &str = "/api/v1/apm/traces";
 const GZIP_MIN_BYTES: usize = 1_024;
 const MAX_RESPONSE_BYTES: u64 = 65_536;
 const DEFAULT_RETRY_AFTER: u64 = 60;
+const TLS_ERROR: &str = "TLS error";
 
 /// The outcome of one request.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +40,8 @@ pub(crate) enum Outcome {
     RateLimited(Duration),
     /// 5xx, 408, timeouts and connection errors.
     Retryable(String),
-    /// Any other 4xx (400, 401, 413, 415, 422 …): never retried.
+    /// A 3xx redirect (never followed, so the key is never forwarded) or any
+    /// other 4xx (400, 401, 413, 415, 422 …): never retried.
     Rejected(u16),
 }
 
@@ -50,6 +52,9 @@ impl Outcome {
             Outcome::NotFound => "HTTP 404".into(),
             Outcome::RateLimited(_) => "HTTP 429".into(),
             Outcome::Retryable(reason) => reason.clone(),
+            Outcome::Rejected(status @ 300..=399) => {
+                format!("HTTP {status} redirect (not followed: set the endpoint to the final https:// URL)")
+            }
             Outcome::Rejected(status) => format!("HTTP {status}"),
         }
     }
@@ -83,6 +88,7 @@ pub(crate) struct Transport {
 impl Transport {
     pub(crate) fn new(endpoint: &str, api_key: &str, connect_timeout: Duration, timeout: Duration) -> Self {
         let config = ureq::Agent::config_builder()
+            .tls_config(tls_config())
             .timeout_connect(Some(connect_timeout))
             .timeout_global(Some(timeout))
             .http_status_as_error(false)
@@ -162,6 +168,23 @@ impl Transport {
                 "invalid_api_key",
                 format!("invalid API key {} (HTTP 401); data is dropped", masked_key(&self.api_key)),
             ),
+            Outcome::Rejected(status @ 300..=399) => log::warn_once(
+                "redirected",
+                format!(
+                    "the endpoint redirected (HTTP {status}); redirects are not followed, so the API key is \
+                     never forwarded and data is dropped: set GOODSORCERY_ENDPOINT (or Config::endpoint) to the \
+                     final https:// URL"
+                ),
+            ),
+            Outcome::Retryable(reason) if reason == TLS_ERROR => log::warn_once(
+                "tls_error",
+                if cfg!(feature = "platform-verifier") {
+                    "TLS error talking to the endpoint (checked against the system certificate store); will retry"
+                } else {
+                    "TLS error talking to the endpoint (only the bundled Mozilla root certificates are trusted; \
+                     the `platform-verifier` feature uses the system store); will retry"
+                },
+            ),
             Outcome::Rejected(status) => log::warn_every(
                 "rejected",
                 Duration::from_secs(60),
@@ -177,12 +200,31 @@ impl Transport {
 fn error_kind(error: &ureq::Error) -> &'static str {
     match error {
         ureq::Error::Timeout(_) => "timeout",
+        ureq::Error::Io(io) if is_tls(io) => TLS_ERROR,
         ureq::Error::Io(_) => "connection error",
         ureq::Error::HostNotFound => "host not found",
         ureq::Error::ConnectionFailed => "connection failed",
-        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => "TLS error",
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => TLS_ERROR,
         _ => "request error",
     }
+}
+
+/// rustls reports handshake and certificate failures (an unknown issuer, a
+/// wrong host name) wrapped in an `io::Error`, so ureq hands them back as
+/// `Error::Io`.
+fn is_tls(error: &std::io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<rustls::Error>())
+}
+
+/// The bundled Mozilla roots (webpki-roots), or the operating system's
+/// verifier and certificate store with the `platform-verifier` feature.
+fn tls_config() -> ureq::tls::TlsConfig {
+    let roots = if cfg!(feature = "platform-verifier") {
+        ureq::tls::RootCerts::PlatformVerifier
+    } else {
+        ureq::tls::RootCerts::WebPki
+    };
+    ureq::tls::TlsConfig::builder().root_certs(roots).build()
 }
 
 fn gzip(bytes: &[u8]) -> Option<Vec<u8>> {
@@ -216,6 +258,32 @@ mod tests {
         assert_eq!(classify(408, None, Value::Null), Outcome::Retryable("HTTP 408".into()));
         assert_eq!(classify(401, None, Value::Null), Outcome::Rejected(401));
         assert_eq!(classify(422, None, Value::Null), Outcome::Rejected(422));
+        assert_eq!(classify(301, None, Value::Null), Outcome::Rejected(301));
+    }
+
+    #[test]
+    fn redirects_are_described_with_the_fix() {
+        let description = Outcome::Rejected(308).description();
+        assert!(description.starts_with("HTTP 308 redirect"), "{description}");
+        assert!(description.contains("final https:// URL"), "{description}");
+        assert_eq!(Outcome::Rejected(422).description(), "HTTP 422");
+    }
+
+    #[test]
+    fn a_failed_tls_handshake_is_a_tls_error() {
+        use std::io::{Read, Write};
+        // A plain-HTTP server behind an https:// endpoint: rustls rejects the reply.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = stream.read(&mut [0; 1_024]);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
+        });
+        let endpoint = format!("https://127.0.0.1:{port}");
+        let transport = Transport::new(&endpoint, "gs_live_test", Duration::from_secs(2), Duration::from_secs(5));
+        assert_eq!(transport.get(VERIFY_PATH), Outcome::Retryable(TLS_ERROR.into()));
+        server.join().unwrap();
     }
 
     #[test]

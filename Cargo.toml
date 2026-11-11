@@ -23,12 +23,17 @@ performance = []
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
 # capture_anyhow for anyhow::Error.
 anyhow = ["dep:anyhow"]
+# Trust the operating system's certificate store (and its private or corporate
+# CAs) instead of the bundled Mozilla roots, through rustls-platform-verifier.
+platform-verifier = ["ureq/platform-verifier"]
 
 [dependencies]
 flate2 = "1.0.30"
 pin-project-lite = "0.2.14"
 serde_json = "1.0.120"
 ureq = { version = "3.0.12", default-features = false, features = ["rustls"] }
+# Only to recognise ureq's TLS failures (rustls::Error inside an io::Error).
+rustls = { version = "0.23", default-features = false, features = ["std"] }
 anyhow = { version = "1.0.86", optional = true }
 axum = { version = "0.8.1", default-features = false, features = ["matched-path"], optional = true }
 http = { version = "1.1.0", optional = true }

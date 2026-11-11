@@ -291,6 +291,12 @@ fn verifies_the_key() {
     assert_eq!(goodsorcery::verify(), goodsorcery::Verification::Ok { environment: "staging".into() });
     server.respond_with(|_| Reply::status(401));
     assert_eq!(goodsorcery::verify(), goodsorcery::Verification::InvalidKey);
+    // Redirects are never followed (the key would go with them); the result
+    // says what to change.
+    server.respond_with(|_| Reply::status(301).header("Location", "https://elsewhere.example.com/api/v1/verify"));
+    let goodsorcery::Verification::Failed(reason) = goodsorcery::verify() else { panic!("expected Failed") };
+    assert!(reason.starts_with("HTTP 301 redirect"), "{reason}");
+    assert!(reason.contains("final https:// URL"), "{reason}");
     drop(guard);
 }
 
