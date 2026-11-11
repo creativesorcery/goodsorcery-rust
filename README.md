@@ -292,7 +292,7 @@ cargo test --no-default-features
 rustup run 1.85 cargo test --all-features   # MSRV
 ```
 
-The integration tests run against a fake ingest server in `tests/support`. See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute, and [SECURITY.md](SECURITY.md) to report a vulnerability privately.
+The integration tests run against a fake ingest server in `tests/support`. See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute, [RELEASING.md](RELEASING.md) for how maintainers publish a release, and [SECURITY.md](SECURITY.md) to report a vulnerability privately.
 
 ## License
 

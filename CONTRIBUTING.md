@@ -27,4 +27,8 @@ These keep the crate safe to drop into any app:
 - The wire format follows the ingest protocol in [goodsorcery_web's `docs/INGEST_API.md`](https://github.com/creativesorcery/goodsorcery_web/blob/main/docs/INGEST_API.md).
 - MSRV is Rust 1.85 (checked in CI); raise it only deliberately, with a changelog line.
 
+## Releasing
+
+Maintainers release with cargo-release; the steps are in [RELEASING.md](RELEASING.md). Pull requests add their changelog line under `## Unreleased`, and the release dates that section.
+
 By contributing you agree that your contributions are licensed under the [MIT License](LICENSE).

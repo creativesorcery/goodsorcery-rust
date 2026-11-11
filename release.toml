@@ -1,0 +1,29 @@
+# cargo-release settings. See RELEASING.md for the release steps.
+
+allow-branch = ["main"]
+tag-name = "v{{version}}"
+tag-message = "Release {{version}}"
+pre-release-commit-message = "Release {{version}}"
+
+# Run the tests after the version bump, before anything is committed or published.
+pre-release-hook = ["cargo", "test", "--all-features"]
+
+# Date the "Unreleased" changelog section and start a new, empty one above it.
+[[pre-release-replacements]]
+file = "CHANGELOG.md"
+search = "## Unreleased"
+replace = "## Unreleased\n\n## {{version}} ({{date}})"
+exactly = 1
+
+# Keep the README's install snippets on the new version.
+[[pre-release-replacements]]
+file = "README.md"
+search = 'goodsorcery = "[0-9.]+"'
+replace = 'goodsorcery = "{{version}}"'
+exactly = 1
+
+[[pre-release-replacements]]
+file = "README.md"
+search = 'tag = "v[0-9.]+"'
+replace = 'tag = "v{{version}}"'
+exactly = 1

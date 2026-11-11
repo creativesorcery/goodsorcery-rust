@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## Unreleased
 
 - First version of the Rust client for Good Sorcery (ingest protocol revision 1.1).
 - **Errors:** `init` returns a guard that sends what is queued when dropped; `capture_error` for any `std::error::Error` (class from its type, message, up to three `source()` causes), `capture_message`, `capture_anyhow` (feature `anyhow`), `Options` for level, tags, context, transaction, user and fingerprint. Backtraces are captured unresolved and resolved on the sender thread: app-relative file, line, column, function, module, `in_app` and `package` (this client's own frames are never in-app, even from a path dependency), with code context for the top in-app frames when the source can be read.
